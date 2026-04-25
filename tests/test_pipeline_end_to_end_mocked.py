@@ -130,8 +130,7 @@ def test_mocked_pipeline_to_features_table(tmp_path) -> None:
             sleep_efficiency_pct,
             sleep_deep_share_pct,
             hrv_7d_avg,
-            anxiety_status_score,
-            cigarettes_count
+            anxiety_status_score
         from daily_features
         where date_local = ?
         """,
@@ -150,7 +149,6 @@ def test_mocked_pipeline_to_features_table(tmp_path) -> None:
     assert row[9] == pytest.approx(6000 / 25000 * 100)
     assert row[10] == 88
     assert row[11] == 3
-    assert row[12] == 1
 
     notion_row = storage.conn.execute(
         """

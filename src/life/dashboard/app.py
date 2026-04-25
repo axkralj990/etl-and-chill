@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -8,8 +9,10 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 from life.config import load_settings
+from life.connectors.notion import NotionConnector
 from life.dashboard.data import (
     ANXIETY_STATUS_COLORS,
     aggregate_period,
@@ -20,7 +23,11 @@ from life.dashboard.data import (
     load_daily_frame,
     metric_columns,
 )
+from life.enums import SourceName
+from life.inference.cmdstan_adapter import CmdStanInferenceAdapter
 from life.pipeline.runtime_config import load_runtime_config
+from life.pipeline.shared import finalize_features, run_notion_sync
+from life.storage.duckdb import DuckDBStorage
 
 
 def _theme_css() -> str:
@@ -353,34 +360,52 @@ def _sleep_tab(df: pd.DataFrame) -> None:
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("#### Sleep physiology")
-    phys_cols = [
-        c
-        for c in [
-            "sleep_avg_hr",
-            "sleep_avg_hrv",
-            "sleep_temperature_deviation",
-            "readiness_score",
-        ]
-        if c in recent.columns
+    metric_specs = [
+        ("sleep_avg_hr", "Average HR", "bpm", "#f4d35e"),
+        ("sleep_avg_hrv", "Average HRV", "ms", "#4ea8de"),
+        ("sleep_temperature_deviation", "Temperature deviation", "deg", "#5e60ce"),
+        ("readiness_score", "Readiness", "pts", "#3da35d"),
     ]
-    if phys_cols:
-        fig = go.Figure()
-        for col in phys_cols:
-            y_axis = "y2" if "temperature" in col else "y"
+    metric_specs = [spec for spec in metric_specs if spec[0] in recent.columns]
+
+    if metric_specs:
+        fig = make_subplots(
+            rows=len(metric_specs),
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+        )
+
+        for row_idx, (metric, label, unit, line_color) in enumerate(metric_specs, start=1):
+            plot_df = recent[["date_local", metric]].copy()
+            plot_df[metric] = pd.to_numeric(plot_df[metric], errors="coerce")
+            plot_df = plot_df.dropna(subset=[metric])
+            if plot_df.empty:
+                continue
+
             fig.add_trace(
                 go.Scatter(
-                    x=recent["date_local"],
-                    y=recent[col],
-                    mode="lines",
-                    name=col,
-                    yaxis=y_axis,
-                )
+                    x=plot_df["date_local"],
+                    y=plot_df[metric],
+                    mode="lines+markers",
+                    line=dict(color=line_color, width=3),
+                    marker=dict(
+                        size=7,
+                        color=line_color,
+                        line=dict(color=line_color, width=1),
+                    ),
+                    showlegend=False,
+                    hovertemplate=(
+                        "Date: %{x|%Y-%m-%d}<br>" + f"{label}: %{{y:.2f}} {unit}<extra></extra>"
+                    ),
+                ),
+                row=row_idx,
+                col=1,
             )
-        fig.update_layout(
-            height=430,
-            yaxis=dict(title="Sleep physiology"),
-            yaxis2=dict(title="Temperature deviation", overlaying="y", side="right"),
-        )
+            fig.update_yaxes(title_text=f"{label} ({unit})", row=row_idx, col=1)
+
+        fig.update_xaxes(title_text="Date", row=len(metric_specs), col=1)
+        fig.update_layout(height=240 * len(metric_specs), margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
 
@@ -557,49 +582,250 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
         )
         st.plotly_chart(fig_attain, use_container_width=True)
 
-        st.markdown("#### Actual vs goal markers")
-        marker_df = progress.sort_values("metric_label").copy()
-        fig_markers = go.Figure()
-        for row in marker_df.itertuples():
-            fig_markers.add_trace(
-                go.Scatter(
-                    x=[row.goal, row.avg_value],
-                    y=[row.metric_label, row.metric_label],
-                    mode="lines",
-                    line=dict(color="#aab2bf", width=3),
-                    showlegend=False,
-                    hoverinfo="skip",
+        st.markdown("#### Progress vs on-course line")
+        period_dates = pd.date_range(start=period_start, end=period_end, freq="D")
+        today_cap = min(today, period_end)
+
+        period_df = df.copy()
+        period_df["date_local"] = pd.to_datetime(period_df["date_local"], errors="coerce")
+        period_df = period_df.dropna(subset=["date_local"])
+        period_df = period_df[
+            (period_df["date_local"] >= period_start) & (period_df["date_local"] <= period_end)
+        ].copy()
+
+        def _on_course_line(target_total: float) -> np.ndarray:
+            elapsed_days_idx = np.arange(1, len(period_dates) + 1, dtype=float)
+            return target_total * (elapsed_days_idx / float(len(period_dates)))
+
+        chart_cols = st.columns(4)
+
+        with chart_cols[0]:
+            step_row = progress[progress["metric"] == "steps"]
+            if step_row.empty:
+                st.info("Steps goal not configured.")
+            else:
+                step_goal = float(step_row.iloc[0]["goal"])
+                step_target_total = float(len(period_dates)) * step_goal
+                step_daily = (
+                    period_df.groupby("date_local", dropna=False)["steps"]
+                    .sum()
+                    .reindex(period_dates)
+                    if "steps" in period_df.columns
+                    else pd.Series(index=period_dates, dtype=float)
                 )
-            )
-        fig_markers.add_trace(
-            go.Scatter(
-                x=marker_df["goal"],
-                y=marker_df["metric_label"],
-                mode="markers",
-                marker=dict(color="#f4d35e", size=11, symbol="diamond"),
-                name="Goal",
-            )
-        )
-        fig_markers.add_trace(
-            go.Scatter(
-                x=marker_df["avg_value"],
-                y=marker_df["metric_label"],
-                mode="markers",
-                marker=dict(
-                    color=np.where(marker_df["on_track"], "#3da35d", "#d1495b"),
-                    size=12,
-                    symbol="circle",
-                ),
-                name="Actual",
-            )
-        )
-        fig_markers.update_layout(
-            height=360,
-            xaxis_title="Value",
-            yaxis_title="Metric",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        st.plotly_chart(fig_markers, use_container_width=True)
+                step_daily = pd.to_numeric(step_daily, errors="coerce").fillna(0.0)
+                step_actual = step_daily.cumsum()
+                step_actual[step_actual.index > today_cap] = np.nan
+
+                fig_steps = go.Figure()
+                fig_steps.add_trace(
+                    go.Scatter(
+                        x=period_dates,
+                        y=_on_course_line(step_target_total),
+                        mode="lines",
+                        line=dict(color="#f4d35e", width=2, dash="dash"),
+                        name="On-course",
+                    )
+                )
+                fig_steps.add_trace(
+                    go.Scatter(
+                        x=period_dates,
+                        y=step_actual,
+                        mode="lines+markers",
+                        line=dict(color="#4ea8de", width=3),
+                        marker=dict(size=5),
+                        name="Actual",
+                    )
+                )
+                fig_steps.update_layout(
+                    title="Steps",
+                    height=320,
+                    xaxis_title=f"Time in {period}",
+                    yaxis_title="Cumulative steps",
+                    yaxis=dict(range=[0, step_target_total]),
+                    margin=dict(l=8, r=8, t=40, b=8),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_steps, use_container_width=True)
+
+        with chart_cols[1]:
+            sleep_row = progress[progress["metric"] == "sleep_total_hours"]
+            if sleep_row.empty:
+                st.info("Sleep goal not configured.")
+            else:
+                sleep_goal = float(sleep_row.iloc[0]["goal"])
+                sleep_target_total = float(len(period_dates)) * sleep_goal
+                sleep_daily = (
+                    period_df.groupby("date_local", dropna=False)["sleep_total_hours"]
+                    .mean()
+                    .reindex(period_dates)
+                    if "sleep_total_hours" in period_df.columns
+                    else pd.Series(index=period_dates, dtype=float)
+                )
+                sleep_daily = pd.to_numeric(sleep_daily, errors="coerce").fillna(0.0)
+                sleep_actual = sleep_daily.cumsum()
+                sleep_actual[sleep_actual.index > today_cap] = np.nan
+
+                fig_sleep = go.Figure()
+                fig_sleep.add_trace(
+                    go.Scatter(
+                        x=period_dates,
+                        y=_on_course_line(sleep_target_total),
+                        mode="lines",
+                        line=dict(color="#f4d35e", width=2, dash="dash"),
+                        name="On-course",
+                    )
+                )
+                fig_sleep.add_trace(
+                    go.Scatter(
+                        x=period_dates,
+                        y=sleep_actual,
+                        mode="lines+markers",
+                        line=dict(color="#5e60ce", width=3),
+                        marker=dict(size=5),
+                        name="Actual",
+                    )
+                )
+                fig_sleep.update_layout(
+                    title="Sleep",
+                    height=320,
+                    xaxis_title=f"Time in {period}",
+                    yaxis_title="Cumulative sleep hours",
+                    yaxis=dict(range=[0, sleep_target_total]),
+                    margin=dict(l=8, r=8, t=40, b=8),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_sleep, use_container_width=True)
+
+        with chart_cols[2]:
+            strength_row = progress[progress["metric"] == "strength_elements"]
+            if strength_row.empty:
+                st.info("Workout goal not configured.")
+            else:
+                workout_target_total = float(strength_row.iloc[0]["goal"])
+                strength_series = pd.Series(index=period_dates, dtype=float)
+                if "workout_elements_json" in period_df.columns:
+                    expanded_strength: list[dict[str, object]] = []
+                    for row in period_df.itertuples():
+                        raw_json = getattr(row, "workout_elements_json", None)
+                        if not isinstance(raw_json, str) or not raw_json.strip():
+                            continue
+                        try:
+                            parsed = json.loads(raw_json)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(parsed, list):
+                            continue
+                        for item in parsed:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") != "strength":
+                                continue
+                            elements = item.get("elements")
+                            value = elements.get("elements") if isinstance(elements, dict) else None
+                            expanded_strength.append(
+                                {
+                                    "date_local": row.date_local,
+                                    "elements": value,
+                                }
+                            )
+                    if expanded_strength:
+                        strength_df = pd.DataFrame(expanded_strength)
+                        strength_df["date_local"] = pd.to_datetime(
+                            strength_df["date_local"], errors="coerce"
+                        )
+                        strength_df["elements"] = pd.to_numeric(
+                            strength_df["elements"], errors="coerce"
+                        )
+                        strength_df = strength_df.dropna(subset=["date_local", "elements"])
+                        strength_series = (
+                            strength_df.groupby("date_local", dropna=False)["elements"]
+                            .sum()
+                            .reindex(period_dates)
+                        )
+
+                strength_series = pd.to_numeric(strength_series, errors="coerce").fillna(0.0)
+                workout_actual = strength_series.cumsum()
+                workout_actual[workout_actual.index > today_cap] = np.nan
+
+                fig_workouts = go.Figure()
+                fig_workouts.add_trace(
+                    go.Scatter(
+                        x=period_dates,
+                        y=_on_course_line(workout_target_total),
+                        mode="lines",
+                        line=dict(color="#f4d35e", width=2, dash="dash"),
+                        name="On-course",
+                    )
+                )
+                fig_workouts.add_trace(
+                    go.Scatter(
+                        x=period_dates,
+                        y=workout_actual,
+                        mode="lines+markers",
+                        line=dict(color="#3da35d", width=3),
+                        marker=dict(size=5),
+                        name="Actual",
+                    )
+                )
+                fig_workouts.update_layout(
+                    title="Workouts",
+                    height=320,
+                    xaxis_title=f"Time in {period}",
+                    yaxis_title="Cumulative workout elements",
+                    yaxis=dict(range=[0, workout_target_total]),
+                    margin=dict(l=8, r=8, t=40, b=8),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_workouts, use_container_width=True)
+
+        with chart_cols[3]:
+            mindful_row = progress[progress["metric"] == "mindful_min"]
+            if mindful_row.empty:
+                st.info("Mindful goal not configured.")
+            else:
+                mindful_target_total = float(mindful_row.iloc[0]["goal"])
+                mindful_daily = (
+                    period_df.groupby("date_local", dropna=False)["mindful_min"]
+                    .sum()
+                    .reindex(period_dates)
+                    if "mindful_min" in period_df.columns
+                    else pd.Series(index=period_dates, dtype=float)
+                )
+                mindful_daily = pd.to_numeric(mindful_daily, errors="coerce").fillna(0.0)
+                mindful_actual = mindful_daily.cumsum()
+                mindful_actual[mindful_actual.index > today_cap] = np.nan
+
+                fig_mindful = go.Figure()
+                fig_mindful.add_trace(
+                    go.Scatter(
+                        x=period_dates,
+                        y=_on_course_line(mindful_target_total),
+                        mode="lines",
+                        line=dict(color="#f4d35e", width=2, dash="dash"),
+                        name="On-course",
+                    )
+                )
+                fig_mindful.add_trace(
+                    go.Scatter(
+                        x=period_dates,
+                        y=mindful_actual,
+                        mode="lines+markers",
+                        line=dict(color="#2a9d8f", width=3),
+                        marker=dict(size=5),
+                        name="Actual",
+                    )
+                )
+                fig_mindful.update_layout(
+                    title="Mindful",
+                    height=320,
+                    xaxis_title=f"Time in {period}",
+                    yaxis_title="Cumulative mindful minutes",
+                    yaxis=dict(range=[0, mindful_target_total]),
+                    margin=dict(l=8, r=8, t=40, b=8),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_mindful, use_container_width=True)
 
         strength_rows = progress[progress["metric"] == "strength_elements"]
         if not strength_rows.empty:
@@ -881,6 +1107,464 @@ def _workouts_tab(df: pd.DataFrame) -> None:
     st.dataframe(log, use_container_width=True, hide_index=True)
 
 
+def _bayes_regression_tab(df: pd.DataFrame, metrics: list[str]) -> None:
+    st.subheader("Bayesian multiple regression")
+    if df.empty or not metrics:
+        st.info("No numeric data available for Bayesian regression.")
+        return
+
+    if len(metrics) < 2:
+        st.info("Need at least two numeric metrics (target + one explanatory variable).")
+        return
+
+    target_default = (
+        metrics.index("anxiety_status_score") if "anxiety_status_score" in metrics else 0
+    )
+    target = st.selectbox(
+        "Target variable",
+        options=metrics,
+        index=target_default,
+        key="bayes_target",
+    )
+
+    dated_df = df.copy()
+    dated_df["date_local"] = pd.to_datetime(dated_df["date_local"], errors="coerce")
+    dated_df = dated_df.dropna(subset=["date_local"])
+    if dated_df.empty:
+        st.info("No dated rows available for regression.")
+        return
+
+    min_date = dated_df["date_local"].min().date()
+    max_date = dated_df["date_local"].max().date()
+    d1, d2 = st.columns(2)
+    start_date = d1.date_input(
+        "Start date",
+        value=min_date,
+        min_value=min_date,
+        max_value=max_date,
+        key="bayes_start_date",
+    )
+    end_date = d2.date_input(
+        "End date",
+        value=max_date,
+        min_value=min_date,
+        max_value=max_date,
+        key="bayes_end_date",
+    )
+    if start_date > end_date:
+        st.warning("Start date must be on or before end date.")
+        return
+
+    filtered = dated_df[
+        (dated_df["date_local"].dt.date >= start_date)
+        & (dated_df["date_local"].dt.date <= end_date)
+    ].copy()
+
+    st.markdown("#### Explanatory variables (6 slots)")
+    st.caption(
+        "Lag direction: positive lag uses past predictor values (t-lag) to explain today's target; "
+        "negative lag uses future values."
+    )
+
+    explanatory_options = [m for m in metrics if m != target]
+    slot_defaults: list[str] = []
+    for candidate in [
+        "sleep_total_hours",
+        "steps",
+        "readiness_score",
+        "sleep_score",
+        "activity_score",
+        "sleep_efficiency_pct",
+    ]:
+        if candidate in explanatory_options and candidate not in slot_defaults:
+            slot_defaults.append(candidate)
+    slot_defaults = slot_defaults[:6]
+
+    selected_features: list[str] = []
+    lag_by_feature: dict[str, int] = {}
+    duplicate_features: set[str] = set()
+    for slot in range(6):
+        options = ["(none)", *explanatory_options]
+        default_feature = slot_defaults[slot] if slot < len(slot_defaults) else "(none)"
+        default_index = options.index(default_feature) if default_feature in options else 0
+        c1, c2 = st.columns([4, 2])
+        feature = c1.selectbox(
+            f"Variable {slot + 1}",
+            options=options,
+            index=default_index,
+            key=f"bayes_feature_slot_{slot}",
+        )
+        lag = int(
+            c2.number_input(
+                f"Lag {slot + 1} (days)",
+                min_value=-14,
+                max_value=14,
+                value=0,
+                step=1,
+                key=f"bayes_lag_slot_{slot}",
+            )
+        )
+        if feature != "(none)":
+            if feature in selected_features:
+                duplicate_features.add(feature)
+            else:
+                selected_features.append(feature)
+            lag_by_feature[feature] = lag
+
+    if duplicate_features:
+        dup_text = ", ".join(sorted(duplicate_features))
+        st.warning(f"Duplicate variables ignored: {dup_text}")
+
+    c1, c2, c3 = st.columns(3)
+    normalize = c1.checkbox("Normalize variables", value=True, key="bayes_normalize")
+    chains = c2.slider("Chains", min_value=2, max_value=4, value=4, key="bayes_chains")
+    samples = c3.slider(
+        "Samples / chain",
+        min_value=500,
+        max_value=2000,
+        value=1000,
+        step=250,
+        key="bayes_samples",
+    )
+
+    rows_in_range = len(filtered)
+    rows_used_text = "n/a"
+    preview_error: str | None = None
+    if selected_features:
+        try:
+            adapter = CmdStanInferenceAdapter()
+            preview_frame, _, _, _ = adapter.build_design_matrix(
+                df=filtered,
+                target=target,
+                features=selected_features,
+                lag_by_feature=lag_by_feature,
+                normalize=normalize,
+            )
+            rows_used_text = f"{len(preview_frame):,}"
+        except Exception as exc:
+            preview_error = str(exc)
+
+    st.markdown("#### Input sample overview")
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Rows in date range", f"{rows_in_range:,}")
+    s2.metric("Rows used after lag/NA", rows_used_text)
+    s3.metric("Predictors selected", str(len(selected_features)))
+    if preview_error is not None:
+        st.caption(f"Design-matrix preview warning: {preview_error}")
+
+    run_clicked = st.button("Run cmdstan regression", key="bayes_run")
+    if run_clicked:
+        if not selected_features:
+            st.warning("Choose at least one explanatory variable.")
+        else:
+            progress = st.progress(5, text="Preparing regression inputs...")
+            try:
+                adapter = CmdStanInferenceAdapter()
+                progress.progress(20, text="Building design matrix...")
+                progress.progress(35, text="Running CmdStan sampling...")
+                result = adapter.run(
+                    df=filtered,
+                    target=target,
+                    features=selected_features,
+                    lag_by_feature=lag_by_feature,
+                    normalize=normalize,
+                    chains=chains,
+                    iter_sampling=samples,
+                    iter_warmup=samples,
+                )
+            except ModuleNotFoundError:
+                progress.empty()
+                st.error(
+                    "cmdstanpy is not installed. "
+                    "Run `uv sync --extra inference` and ensure CmdStan is installed."
+                )
+            except Exception as exc:
+                progress.empty()
+                st.error(f"Regression failed: {exc}")
+            else:
+                progress.progress(100, text="Regression complete")
+                st.session_state["bayes_result"] = result
+
+    result = st.session_state.get("bayes_result")
+    if result is None:
+        st.caption("Configure variables and click `Run cmdstan regression`.")
+        return
+
+    st.markdown("#### MCMC diagnostics")
+    diag = result.diagnostics
+    d1, d2, d3, d4 = st.columns(4)
+    max_rhat = diag.get("max_r_hat")
+    min_ess = diag.get("min_ess_bulk")
+    d1.metric("Max R-hat", "n/a" if pd.isna(max_rhat) else f"{float(max_rhat):.3f}")
+    d2.metric("Min ESS bulk", "n/a" if pd.isna(min_ess) else f"{float(min_ess):.0f}")
+    d3.metric("Divergences", f"{int(diag.get('divergent_transitions', 0))}")
+    d4.metric("MCMC quality", str(diag.get("mcmc_quality", "n/a")))
+
+    st.markdown("#### CmdStan run output (tail)")
+    st.text_area("Sampling logs", value=result.stdout_tail, height=240, disabled=True)
+
+    st.markdown("#### Coefficients")
+    coef_df = result.coefficients.copy()
+    draws_df = result.coefficient_draws.copy()
+    if coef_df.empty or draws_df.empty:
+        st.info("No coefficients available.")
+    else:
+        fig_coef = go.Figure()
+        term_order = list(coef_df["term"])
+        for term in term_order:
+            term_draws = draws_df[draws_df["term"] == term]["value"]
+            if term_draws.empty:
+                continue
+            fig_coef.add_trace(
+                go.Violin(
+                    x=term_draws,
+                    y=[term] * len(term_draws),
+                    orientation="h",
+                    side="positive",
+                    line_color="#4ea8de",
+                    fillcolor="rgba(78, 168, 222, 0.45)",
+                    width=0.75,
+                    points=False,
+                    showlegend=False,
+                    meanline_visible=False,
+                    hovertemplate="term: %{y}<br>draw: %{x:.3f}<extra></extra>",
+                )
+            )
+
+        for row in coef_df.itertuples():
+            fig_coef.add_trace(
+                go.Scatter(
+                    x=[row.q5, row.q95],
+                    y=[row.term, row.term],
+                    mode="lines",
+                    line=dict(color="#f4d35e", width=3),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+            fig_coef.add_trace(
+                go.Scatter(
+                    x=[row.mean],
+                    y=[row.term],
+                    mode="markers",
+                    marker=dict(color="#f4d35e", size=9),
+                    name="Mean / 5-95%",
+                    showlegend=False,
+                    hovertemplate="term: %{y}<br>mean: %{x:.3f}<extra></extra>",
+                )
+            )
+
+        fig_coef.add_vline(x=0, line_dash="dash", line_width=1, line_color="#f1f3f5")
+        fig_coef.update_layout(
+            height=max(360, 90 + 55 * max(len(term_order), 1)),
+            xaxis_title="Coefficient",
+            yaxis_title="Term",
+            violinmode="overlay",
+        )
+        st.plotly_chart(fig_coef, use_container_width=True)
+
+    st.markdown("#### Posterior predictive check")
+    ppc = result.ppc.copy().sort_values("date_local")
+    fig_ppc = go.Figure()
+    fig_ppc.add_trace(
+        go.Scatter(
+            x=ppc["date_local"],
+            y=ppc["y_rep_q5"],
+            mode="lines",
+            line=dict(width=0),
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    fig_ppc.add_trace(
+        go.Scatter(
+            x=ppc["date_local"],
+            y=ppc["y_rep_q95"],
+            mode="lines",
+            fill="tonexty",
+            fillcolor="rgba(78, 168, 222, 0.2)",
+            line=dict(width=0),
+            name="Posterior 5-95%",
+        )
+    )
+    fig_ppc.add_trace(
+        go.Scatter(
+            x=ppc["date_local"],
+            y=ppc["y_rep_q50"],
+            mode="lines",
+            line=dict(color="#4ea8de", width=2),
+            name="Posterior median",
+        )
+    )
+    fig_ppc.add_trace(
+        go.Scatter(
+            x=ppc["date_local"],
+            y=ppc["y_actual"],
+            mode="markers",
+            marker=dict(color="#f4d35e", size=7),
+            name="Observed",
+        )
+    )
+    fig_ppc.update_layout(height=420, xaxis_title="Date", yaxis_title=target)
+    st.plotly_chart(fig_ppc, use_container_width=True)
+
+    st.markdown("#### Draw summary")
+    st.dataframe(
+        coef_df[["term", "mean", "q5", "q50", "q95", "r_hat", "ess_bulk"]],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def _sync_and_source_stats_tab(db_path: Path, settings, runtime) -> None:
+    st.subheader("Sync + source statistics")
+    st.caption("Refresh Notion data and inspect descriptive stats for Notion and Oura tables.")
+
+    refresh_message = st.session_state.pop("sync_refresh_message", None)
+    if isinstance(refresh_message, str) and refresh_message:
+        st.success(refresh_message)
+
+    run_refresh = st.button("Refresh from Notion", key="refresh_notion_button")
+    if run_refresh:
+        if not settings.notion_token or not settings.notion_database_id:
+            st.error("Missing NOTION_TOKEN or NOTION_DATABASE_ID in environment.")
+        else:
+            storage: DuckDBStorage | None = None
+            try:
+                storage = DuckDBStorage(db_path)
+                notion_connector = NotionConnector(
+                    settings.notion_token,
+                    settings.notion_database_id,
+                )
+                today = date.today()
+                lookback_days = runtime.incremental.lookback_days
+                fallback_days = runtime.incremental.fallback_days
+                notion_max = storage.get_sync_state(SourceName.NOTION.value, "daily_logs")
+                notion_start = (
+                    notion_max - timedelta(days=lookback_days)
+                    if notion_max
+                    else (today - timedelta(days=fallback_days))
+                )
+
+                with st.spinner("Syncing Notion and rebuilding daily features..."):
+                    notion_count = run_notion_sync(storage, notion_connector, notion_start, today)
+                    finalize_features(storage)
+
+                st.session_state["sync_refresh_message"] = (
+                    "Notion refresh complete. "
+                    f"Rows synced: {notion_count}. Window: {notion_start} to {today}."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Notion refresh failed: {exc}")
+            finally:
+                if storage is not None:
+                    storage.conn.close()
+
+    storage: DuckDBStorage | None = None
+    try:
+        storage = DuckDBStorage(db_path)
+
+        def _render_source_stats(
+            table_name: str,
+            title: str,
+            preferred_numeric: list[str],
+        ) -> None:
+            st.markdown(f"#### {title}")
+            frame = storage.conn.execute(
+                f"select * from {table_name} order by date_local"
+            ).fetchdf()
+            if frame.empty:
+                st.info("No rows available.")
+                return
+
+            deprecated_notion_attrs = {
+                "points",
+                "coffee_count",
+                "cigarettes_count",
+                "sleep_hours_self_reported",
+                "productivity_score",
+                "supplements",
+                "weight_kg",
+                "learned",
+            }
+            if table_name == "canonical_notion_daily":
+                drop_cols = [c for c in deprecated_notion_attrs if c in frame.columns]
+                if drop_cols:
+                    frame = frame.drop(columns=drop_cols)
+
+            frame["date_local"] = pd.to_datetime(frame["date_local"], errors="coerce")
+            rows = len(frame)
+            days = int(frame["date_local"].dropna().nunique())
+            first_day = frame["date_local"].min()
+            last_day = frame["date_local"].max()
+            span_days = int((last_day - first_day).days + 1) if pd.notna(first_day) else 0
+            coverage = (100.0 * days / span_days) if span_days > 0 else 0.0
+            days_since_last = (
+                int((pd.Timestamp.today().normalize() - last_day.normalize()).days)
+                if pd.notna(last_day)
+                else -1
+            )
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Rows", f"{rows:,}")
+            c2.metric("Distinct days", f"{days:,}")
+            c3.metric("Coverage", f"{coverage:.1f}%")
+            c4.metric("First day", "n/a" if pd.isna(first_day) else str(first_day.date()))
+            c5.metric("Days since last", "n/a" if days_since_last < 0 else str(days_since_last))
+
+            numeric = frame.select_dtypes(include=["number"]).copy()
+            for column in preferred_numeric:
+                if column in frame.columns and column not in numeric.columns:
+                    series = pd.to_numeric(frame[column], errors="coerce")
+                    if series.notna().any():
+                        numeric[column] = series
+
+            if not numeric.empty:
+                describe = numeric.describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9]).transpose()
+                describe = describe.reset_index().rename(columns={"index": "metric"})
+                st.markdown("Descriptive statistics")
+                st.dataframe(describe, use_container_width=True, hide_index=True)
+
+            missing = pd.DataFrame(
+                {
+                    "column": frame.columns,
+                    "missing_pct": [100.0 * frame[col].isna().mean() for col in frame.columns],
+                    "non_null_rows": [int(frame[col].notna().sum()) for col in frame.columns],
+                }
+            ).sort_values("missing_pct", ascending=False)
+            st.markdown("Missingness by column")
+            st.dataframe(missing, use_container_width=True, hide_index=True)
+
+        _render_source_stats(
+            table_name="canonical_notion_daily",
+            title="Notion",
+            preferred_numeric=[
+                "anxiety_status_score",
+                "physical_status_score",
+                "alcohol_units",
+                "mindful_min",
+                "workout_count",
+            ],
+        )
+        _render_source_stats(
+            table_name="canonical_oura_daily",
+            title="Oura",
+            preferred_numeric=[
+                "readiness_score",
+                "sleep_score",
+                "activity_score",
+                "steps",
+                "active_calories",
+                "sleep_avg_hrv",
+                "daytime_stress_avg",
+            ],
+        )
+    finally:
+        if storage is not None:
+            storage.conn.close()
+
+
 def main() -> None:
     settings = load_settings()
     runtime = load_runtime_config(settings.pipeline_config_path)
@@ -899,42 +1583,48 @@ def main() -> None:
 
     tabs = st.tabs(
         [
+            "Goals",
             "Home",
+            "Sleep + Recovery",
+            "Workouts",
+            "Anxiety & Stress",
             "Explore",
             "Trends",
-            "Period Summary",
             "Correlations & Lags",
-            "Sleep + Recovery",
-            "Data Quality",
+            "Bayes Regression",
             "Leaderboard",
-            "Goals",
-            "Anxiety & Stress",
-            "Workouts",
+            "Period Summary",
+            "Data Quality",
+            "Sync & Source Stats",
         ]
     )
 
     with tabs[0]:
-        _home_tab(df, metrics)
-    with tabs[1]:
-        _bubble_tab(df, metrics)
-    with tabs[2]:
-        _trends_tab(df, metrics)
-    with tabs[3]:
-        _period_summary_tab(df, metrics)
-    with tabs[4]:
-        _corr_tab(df, metrics)
-    with tabs[5]:
-        _sleep_tab(df)
-    with tabs[6]:
-        _quality_tab(df, metrics)
-    with tabs[7]:
-        _leaderboard_tab(df)
-    with tabs[8]:
         _goals_tab(df, goals_cfg)
-    with tabs[9]:
-        _anxiety_stress_tab(df)
-    with tabs[10]:
+    with tabs[1]:
+        _home_tab(df, metrics)
+    with tabs[2]:
+        _sleep_tab(df)
+    with tabs[3]:
         _workouts_tab(df)
+    with tabs[4]:
+        _anxiety_stress_tab(df)
+    with tabs[5]:
+        _bubble_tab(df, metrics)
+    with tabs[6]:
+        _trends_tab(df, metrics)
+    with tabs[7]:
+        _corr_tab(df, metrics)
+    with tabs[8]:
+        _bayes_regression_tab(df, metrics)
+    with tabs[9]:
+        _leaderboard_tab(df)
+    with tabs[10]:
+        _period_summary_tab(df, metrics)
+    with tabs[11]:
+        _quality_tab(df, metrics)
+    with tabs[12]:
+        _sync_and_source_stats_tab(Path(db_path_str), settings, runtime)
 
 
 if __name__ == "__main__":

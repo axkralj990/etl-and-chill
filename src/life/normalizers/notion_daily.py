@@ -239,27 +239,17 @@ class NotionDailyNormalizer(BaseNormalizer):
                 "physical_status_label": physical_label,
                 "physical_status_score": PHYSICAL_MAP.get((physical_label or "").lower()),
                 "productivity_label": productivity_label,
-                "productivity_score": PRODUCTIVITY_MAP.get((productivity_label or "").lower()),
-                "weight_kg": self._extract_number(properties.get("Weight (kg)", {})),
-                "alcohol_units": self._extract_indicator(properties.get("Alcohol (unt)", {})),
-                "mindful_min": self._extract_indicator(properties.get("Mindful (min)", {})),
-                "points": self._extract_number(properties.get("Points", {})),
-                "coffee_count": self._extract_number(properties.get("Coffee (#)", {})),
+                "alcohol_units": self._extract_number_or_zero(properties.get("Alcohol (unt)", {})),
+                "mindful_min": self._extract_number_or_zero(properties.get("Mindful (min)", {})),
                 "fasting_hours": self._extract_number(properties.get("Fasting", {})),
-                "sleep_hours_self_reported": self._extract_number(
-                    properties.get("Sleep (hrs)", {})
-                ),
                 "cold_min": self._extract_indicator(properties.get("Cold (min)", {})),
-                "cigarettes_count": self._parse_cigarettes(substances),
                 "substances_raw": substances,
                 "workout_raw": workout_raw,
                 "workout_type": workout_type,
                 "workout_count": workout_count,
                 "workout_elements_json": workout_elements_json,
                 "general_notes": self._extract_text(properties.get("General Notes", {})),
-                "supplements": self._extract_text(properties.get("Supplements", {})),
                 "weather": self._extract_text(properties.get("Weather", {})),
-                "learned": self._extract_text(properties.get("Learned", {})),
             }
             out.append(normalized)
         return out

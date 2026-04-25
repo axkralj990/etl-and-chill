@@ -35,18 +35,12 @@ class CanonicalNotionDaily(BaseModel):
     physical_status_label: str | None = None
     physical_status_score: int | None = None
     productivity_label: str | None = None
-    productivity_score: int | None = None
 
-    weight_kg: float | None = None
     alcohol_units: bool | None = None
     mindful_min: bool | None = None
-    points: float | None = None
-    coffee_count: float | None = None
     fasting_hours: float | None = None
-    sleep_hours_self_reported: float | None = None
     cold_min: bool | None = None
 
-    cigarettes_count: int | None = None
     substances_raw: str | None = None
     workout_raw: str | None = None
     workout_type: str | None = None
@@ -54,9 +48,7 @@ class CanonicalNotionDaily(BaseModel):
     workout_elements_json: str | None = None
 
     general_notes: str | None = None
-    supplements: str | None = None
     weather: str | None = None
-    learned: str | None = None
 
 
 class CanonicalOuraDaily(BaseModel):

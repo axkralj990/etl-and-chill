@@ -24,6 +24,7 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
             ),
             "steps": [8000, 7500, 9000, 8500],
             "sleep_total_hours": [6.5, 7.1, None, 7.0],
+            "mindful_min": [20.0, 5.0, None, 15.0],
             "workout_elements_json": [
                 '[{"name":"Strength - 120","type":"strength","elements":{"elements":120}}]',
                 '[{"name":"Strength - 90","type":"strength","elements":{"elements":90}}]',
@@ -37,11 +38,18 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
         "sleep_hours_per_day": 7.0,
         "strength_elements_per_week": 300.0,
         "strength_elements_per_month": 1000.0,
+        "mindful_minutes_per_week": 50.0,
+        "mindful_minutes_per_month": 200.0,
     }
 
     out = build_goals_progress(frame, period="week", goals=goals)
     assert not out.empty
-    assert set(out["metric"]) == {"steps", "sleep_total_hours", "strength_elements"}
+    assert set(out["metric"]) == {
+        "steps",
+        "sleep_total_hours",
+        "strength_elements",
+        "mindful_min",
+    }
 
     steps_row = out[out["metric"] == "steps"].iloc[0]
     assert steps_row["delta"] > 0
@@ -57,6 +65,11 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
     assert strength_row["avg_value"] == 210.0
     assert strength_row["goal"] == 300.0
     assert strength_row["delta"] == -90.0
+
+    mindful_row = out[out["metric"] == "mindful_min"].iloc[0]
+    assert mindful_row["avg_value"] == 40.0
+    assert mindful_row["goal"] == 50.0
+    assert mindful_row["delta"] == -10.0
 
 
 def test_build_anxiety_status_mix_current_month() -> None:

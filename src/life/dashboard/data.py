@@ -13,8 +13,6 @@ SUM_METRICS = {
     "target_calories",
     "inactivity_alerts",
     "mindful_min",
-    "points",
-    "cigarettes_count",
     "alcohol_units",
     "sleep_time_in_bed",
     "sleep_total_duration",
@@ -31,7 +29,6 @@ SUM_METRICS = {
 MEAN_METRICS = {
     "anxiety_status_score",
     "physical_status_score",
-    "productivity_score",
     "activity_score",
     "sleep_score",
     "readiness_score",
@@ -81,6 +78,7 @@ METRIC_UNITS = {
     "sleep_score": "pts",
     "daytime_stress_avg": "score",
     "strength_elements": "elements",
+    "mindful_min": "min",
 }
 
 ANXIETY_STATUS_COLORS = {
@@ -123,11 +121,35 @@ def load_daily_frame(db_path: Path) -> pd.DataFrame:
 
     if not df.empty:
         df["date_local"] = pd.to_datetime(df["date_local"])
+        deprecated = {
+            "points",
+            "coffee_count",
+            "cigarettes_count",
+            "sleep_hours_self_reported",
+            "productivity_score",
+            "weight_kg",
+        }
+        drop_cols = [col for col in deprecated if col in df.columns]
+        if drop_cols:
+            df = df.drop(columns=drop_cols)
     return df
 
 
 def metric_columns(df: pd.DataFrame) -> list[str]:
-    blocked = {"date_local", "week_start_monday", "iso_week", "year", "month", "weekday"}
+    blocked = {
+        "date_local",
+        "week_start_monday",
+        "iso_week",
+        "year",
+        "month",
+        "weekday",
+        "points",
+        "coffee_count",
+        "cigarettes_count",
+        "sleep_hours_self_reported",
+        "productivity_score",
+        "weight_kg",
+    }
     numeric = [
         c
         for c in df.columns
@@ -445,6 +467,37 @@ def build_goals_progress(df: pd.DataFrame, period: str, goals: dict[str, float])
                 "on_track": delta >= 0,
                 "days_with_data": int(frame["date_local"].nunique()),
                 "unit": "elements",
+            }
+        )
+
+    mindful_goal_key = (
+        "mindful_minutes_per_week" if period == "week" else "mindful_minutes_per_month"
+    )
+    mindful_goal_value = goals.get(mindful_goal_key)
+    if (
+        isinstance(mindful_goal_value, int | float)
+        and float(mindful_goal_value) > 0
+        and "mindful_min" in frame.columns
+    ):
+        mindful_series = pd.to_numeric(frame["mindful_min"], errors="coerce").dropna()
+        total_mindful = float(mindful_series.sum()) if not mindful_series.empty else 0.0
+        mindful_goal = float(mindful_goal_value)
+        mindful_delta = total_mindful - mindful_goal
+        rows.append(
+            {
+                "period_start": period_start,
+                "period_end": period_end,
+                "period_label": period_label,
+                "metric": "mindful_min",
+                "metric_label": "Mindful minutes",
+                "direction": "higher",
+                "goal": mindful_goal,
+                "avg_value": total_mindful,
+                "delta": mindful_delta,
+                "delta_pct": 100.0 * mindful_delta / mindful_goal,
+                "on_track": mindful_delta >= 0,
+                "days_with_data": int(mindful_series.shape[0]),
+                "unit": "min",
             }
         )
 

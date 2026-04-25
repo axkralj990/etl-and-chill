@@ -45,25 +45,17 @@ class DuckDBStorage:
                 physical_status_label varchar,
                 physical_status_score integer,
                 productivity_label varchar,
-                productivity_score integer,
-                weight_kg double,
                 alcohol_units double,
                 mindful_min double,
-                points double,
-                coffee_count double,
                 fasting_hours double,
-                sleep_hours_self_reported double,
                 cold_min double,
-                cigarettes_count integer,
                 substances_raw varchar,
                 workout_raw varchar,
                 workout_type varchar,
                 workout_count integer,
                 workout_elements_json varchar,
                 general_notes varchar,
-                supplements varchar,
-                weather varchar,
-                learned varchar
+                weather varchar
             );
             """
         )
@@ -137,15 +129,10 @@ class DuckDBStorage:
                 spo2_average double,
                 daytime_stress_avg double,
                 anxiety_status_score integer,
-                productivity_score integer,
                 physical_status_score integer,
-                sleep_hours_self_reported double,
                 alcohol_units double,
-                coffee_count double,
                 mindful_min double,
                 cold_min double,
-                points double,
-                cigarettes_count integer,
                 sleep_score_7d_avg double,
                 readiness_score_7d_avg double,
                 daytime_stress_7d_avg double,
@@ -153,7 +140,6 @@ class DuckDBStorage:
                 hr_7d_avg double,
                 temp_dev_7d_avg double,
                 sleep_minus_anxiety double,
-                readiness_minus_productivity double,
                 high_stress_flag boolean
             );
             """
@@ -344,15 +330,10 @@ class DuckDBStorage:
                 spo2_average,
                 daytime_stress_avg,
                 anxiety_status_score,
-                productivity_score,
                 physical_status_score,
-                sleep_hours_self_reported,
                 alcohol_units,
-                coffee_count,
                 mindful_min,
                 cold_min,
-                points,
-                cigarettes_count,
                 sleep_score_7d_avg,
                 readiness_score_7d_avg,
                 daytime_stress_7d_avg,
@@ -360,7 +341,6 @@ class DuckDBStorage:
                 hr_7d_avg,
                 temp_dev_7d_avg,
                 sleep_minus_anxiety,
-                readiness_minus_productivity,
                 high_stress_flag
             )
             select
@@ -405,15 +385,10 @@ class DuckDBStorage:
                 o.spo2_average,
                 o.daytime_stress_avg,
                 n.anxiety_status_score,
-                n.productivity_score,
                 n.physical_status_score,
-                n.sleep_hours_self_reported,
                 n.alcohol_units,
-                n.coffee_count,
                 n.mindful_min,
                 n.cold_min,
-                n.points,
-                n.cigarettes_count,
                 avg(o.sleep_score) over (
                     order by coalesce(o.date_local, n.date_local)
                     rows between 6 preceding and current row
@@ -440,8 +415,6 @@ class DuckDBStorage:
                 ) as temp_dev_7d_avg,
                 cast(o.sleep_score as double)
                     - cast(n.anxiety_status_score as double) as sleep_minus_anxiety,
-                cast(o.readiness_score as double)
-                    - cast(n.productivity_score as double) as readiness_minus_productivity,
                 coalesce(o.daytime_stress_avg, 0) > 70 as high_stress_flag
             from canonical_oura_daily o
             full outer join canonical_notion_daily n
@@ -480,15 +453,10 @@ class DuckDBStorage:
                 spo2_average = excluded.spo2_average,
                 daytime_stress_avg = excluded.daytime_stress_avg,
                 anxiety_status_score = excluded.anxiety_status_score,
-                productivity_score = excluded.productivity_score,
                 physical_status_score = excluded.physical_status_score,
-                sleep_hours_self_reported = excluded.sleep_hours_self_reported,
                 alcohol_units = excluded.alcohol_units,
-                coffee_count = excluded.coffee_count,
                 mindful_min = excluded.mindful_min,
                 cold_min = excluded.cold_min,
-                points = excluded.points,
-                cigarettes_count = excluded.cigarettes_count,
                 sleep_score_7d_avg = excluded.sleep_score_7d_avg,
                 readiness_score_7d_avg = excluded.readiness_score_7d_avg,
                 daytime_stress_7d_avg = excluded.daytime_stress_7d_avg,
@@ -496,7 +464,6 @@ class DuckDBStorage:
                 hr_7d_avg = excluded.hr_7d_avg,
                 temp_dev_7d_avg = excluded.temp_dev_7d_avg,
                 sleep_minus_anxiety = excluded.sleep_minus_anxiety,
-                readiness_minus_productivity = excluded.readiness_minus_productivity,
                 high_stress_flag = excluded.high_stress_flag
             """
         )

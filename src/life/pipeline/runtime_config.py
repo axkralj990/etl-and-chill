@@ -41,6 +41,8 @@ class GoalsRuntimeConfig(BaseModel):
     sleep_hours_per_day: float = 7.0
     strength_elements_per_week: float = 300.0
     strength_elements_per_month: float = 1000.0
+    mindful_minutes_per_week: float = 50.0
+    mindful_minutes_per_month: float = 200.0
 
 
 class RuntimeConfig(BaseModel):
