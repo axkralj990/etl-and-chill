@@ -1,7 +1,7 @@
 [project]
 name = "life"
 version = "0.1.0"
-description = "Personal health and life analytics pipeline"
+description = "A personal health and life analytics ETL pipeline that ingests Notion and Oura data into DuckDB, builds derived features, and powers an interactive dashboard for daily, weekly, monthly, and yearly insights."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

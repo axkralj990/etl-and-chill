@@ -1,6 +1,6 @@
-## Life pipeline
+## etl-and-chill
 
-Personal data engineering pipeline for daily life analytics.
+A personal health and life analytics ETL pipeline that ingests Notion and Oura data into DuckDB, builds derived features, and powers an interactive dashboard for daily, weekly, monthly, and yearly insights.
 
 ### Features
 
