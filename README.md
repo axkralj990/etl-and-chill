@@ -50,6 +50,19 @@ Pipeline runbook:
 - incremental lookback/fallback windows
 - bridge fallback window
 
+6. Set up contributor tooling (recommended)
+
+```bash
+make hooks
+```
+
+7. Validate your local setup
+
+```bash
+make lint
+make test
+```
+
 ### Commands
 
 - One-time legacy backfill
@@ -92,6 +105,59 @@ uv run life oura-oauth-status
 
 ```bash
 uv run streamlit run src/life/dashboard/app.py
+```
+
+### Pre-commit hooks
+
+Install hooks:
+
+```bash
+uv run pre-commit install
+uv run pre-commit install --hook-type pre-push
+```
+
+Shortcut:
+
+```bash
+make hooks
+```
+
+Run all hooks manually:
+
+```bash
+uv run pre-commit run --all-files
+```
+
+Configured hooks:
+
+- `ruff --fix` on commit (fails if files were modified so you can review and re-commit)
+- `ruff format` on commit
+- `pytest -q` on push
+
+Expected behavior:
+
+- On `git commit`, Ruff may auto-fix files and stop the commit once so you can review and re-stage.
+- On `git push`, tests run before the push completes.
+- If hooks fail, fix the issue and retry commit/push.
+
+### Make targets
+
+```bash
+make sync      # install/update deps with uv
+make lint      # run ruff checks
+make format    # run ruff formatter
+make test      # run tests
+make hooks     # install git hooks (pre-commit + pre-push)
+make hooks-run # run all hooks on all files
+```
+
+### Recommended dev flow
+
+```bash
+make sync
+make hooks
+make lint
+make test
 ```
 
 Dashboard tabs:
