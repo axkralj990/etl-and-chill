@@ -9,6 +9,10 @@ def test_runtime_config_defaults_when_file_missing(tmp_path: Path) -> None:
     cfg = load_runtime_config(tmp_path / "missing.toml")
     assert cfg.incremental.lookback_days == 7
     assert cfg.bridge.fallback_days == 365
+    assert cfg.goals.steps_per_day == 7500
+    assert cfg.goals.sleep_hours_per_day == 7.0
+    assert cfg.goals.strength_elements_per_week == 300
+    assert cfg.goals.strength_elements_per_month == 1000
     assert "daily_sleep" in [endpoint.value for endpoint in cfg.oura.endpoints]
 
 
@@ -25,6 +29,12 @@ fallback_days = 45
 
 [bridge]
 fallback_days = 180
+
+[goals]
+steps_per_day = 8500
+sleep_hours_per_day = 7.5
+strength_elements_per_week = 350
+strength_elements_per_month = 1200
 """.strip(),
         encoding="utf-8",
     )
@@ -35,3 +45,7 @@ fallback_days = 180
     assert cfg.incremental.lookback_days == 14
     assert cfg.incremental.fallback_days == 45
     assert cfg.bridge.fallback_days == 180
+    assert cfg.goals.steps_per_day == 8500
+    assert cfg.goals.sleep_hours_per_day == 7.5
+    assert cfg.goals.strength_elements_per_week == 350
+    assert cfg.goals.strength_elements_per_month == 1200

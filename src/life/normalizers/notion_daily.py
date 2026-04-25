@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import date
 from typing import Any
@@ -103,6 +104,83 @@ class NotionDailyNormalizer(BaseNormalizer):
 
         return 0 if "cig" in lower else None
 
+    @staticmethod
+    def _clean_workout_name(raw: str) -> str:
+        no_url = re.sub(r"\s*\(https?://[^)]+\)\s*", "", raw).strip()
+        return re.sub(r"\s+", " ", no_url)
+
+    @classmethod
+    def _split_workouts(cls, workout_raw: str | None) -> list[str]:
+        if not workout_raw:
+            return []
+        parts = [cls._clean_workout_name(part) for part in workout_raw.split(",")]
+        return [part for part in parts if part]
+
+    @staticmethod
+    def _workout_type(name: str) -> str:
+        lower = name.lower().strip()
+        if lower.startswith("running") or lower.startswith("run"):
+            return "running"
+        if lower.startswith("strength"):
+            return "strength"
+        if lower.startswith("bjj"):
+            return "bjj"
+        if lower.startswith("climbing"):
+            return "climbing"
+        if lower.startswith("hiking"):
+            return "hiking"
+        if lower.startswith("yoga"):
+            return "yoga"
+        if lower.startswith("walk"):
+            return "walk"
+        if lower.startswith("cycling") or lower.startswith("bike"):
+            return "cycling"
+        if lower.startswith("swim"):
+            return "swimming"
+        return "other"
+
+    @classmethod
+    def _workout_elements(cls, name: str, workout_type: str) -> dict[str, Any]:
+        elements: dict[str, Any] = {}
+
+        if workout_type in {"running", "cycling", "hiking"}:
+            km_match = re.search(r"(\d+(?:\.\d+)?)\s*k\b", name, flags=re.IGNORECASE)
+            if km_match:
+                elements["elements"] = float(km_match.group(1))
+
+        if workout_type == "strength":
+            reps_match = re.search(r"-\s*(\d+)\b", name)
+            if reps_match is None:
+                reps_match = re.search(r"\b(\d+)\b", name)
+            if reps_match:
+                elements["elements"] = int(reps_match.group(1))
+
+        return elements
+
+    @classmethod
+    def _parse_workout_fields(cls, workout_raw: str | None) -> tuple[str | None, int, str | None]:
+        entries = cls._split_workouts(workout_raw)
+        if not entries:
+            return None, 0, None
+
+        parsed_entries: list[dict[str, Any]] = []
+        workout_types: list[str] = []
+        for entry in entries:
+            w_type = cls._workout_type(entry)
+            workout_types.append(w_type)
+            parsed_entries.append(
+                {
+                    "name": entry,
+                    "type": w_type,
+                    "elements": cls._workout_elements(entry, w_type),
+                }
+            )
+
+        unique_types = sorted(set(workout_types))
+        workout_type = unique_types[0] if len(unique_types) == 1 else "mixed"
+        elements_json = json.dumps(parsed_entries, ensure_ascii=True)
+        return workout_type, len(entries), elements_json
+
     def normalize(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for record in records:
@@ -140,6 +218,12 @@ class NotionDailyNormalizer(BaseNormalizer):
             physical_label = self._extract_select(properties.get("Physical Status", {}))
 
             substances = self._extract_text(properties.get("Substances", {}))
+            workout_raw = self._extract_text(properties.get("Workout Resolved", {}))
+            if not workout_raw:
+                workout_raw = self._extract_text(properties.get("Workout", {}))
+            workout_type, workout_count, workout_elements_json = self._parse_workout_fields(
+                workout_raw
+            )
 
             normalized = {
                 "source_id": record.get("id"),
@@ -168,6 +252,10 @@ class NotionDailyNormalizer(BaseNormalizer):
                 "cold_min": self._extract_indicator(properties.get("Cold (min)", {})),
                 "cigarettes_count": self._parse_cigarettes(substances),
                 "substances_raw": substances,
+                "workout_raw": workout_raw,
+                "workout_type": workout_type,
+                "workout_count": workout_count,
+                "workout_elements_json": workout_elements_json,
                 "general_notes": self._extract_text(properties.get("General Notes", {})),
                 "supplements": self._extract_text(properties.get("Supplements", {})),
                 "weather": self._extract_text(properties.get("Weather", {})),

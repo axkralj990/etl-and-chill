@@ -48,6 +48,10 @@ class CanonicalNotionDaily(BaseModel):
 
     cigarettes_count: int | None = None
     substances_raw: str | None = None
+    workout_raw: str | None = None
+    workout_type: str | None = None
+    workout_count: int | None = None
+    workout_elements_json: str | None = None
 
     general_notes: str | None = None
     supplements: str | None = None

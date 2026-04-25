@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -10,10 +11,16 @@ import streamlit as st
 
 from life.config import load_settings
 from life.dashboard.data import (
+    ANXIETY_STATUS_COLORS,
     aggregate_period,
+    build_anxiety_status_counts,
+    build_goals_progress,
+    build_leaderboard,
+    format_metric_value,
     load_daily_frame,
     metric_columns,
 )
+from life.pipeline.runtime_config import load_runtime_config
 
 
 def _theme_css() -> str:
@@ -436,8 +443,448 @@ def _quality_tab(df: pd.DataFrame, metrics: list[str]) -> None:
     st.dataframe(miss, use_container_width=True, hide_index=True)
 
 
+def _leaderboard_tab(df: pd.DataFrame) -> None:
+    st.subheader("All-time leaderboard")
+    leaderboard = build_leaderboard(df)
+    if leaderboard.empty:
+        st.info("Not enough data for leaderboard records yet.")
+        return
+
+    display = leaderboard.copy()
+    display["date_local"] = display["date_local"].dt.date
+    st.dataframe(
+        display[["metric_label", "record_label", "value_display", "date_local"]].rename(
+            columns={"value_display": "value"}
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("#### Record details")
+    choices = [
+        f"{row.metric_label} - {row.record_label} ({row.date_local.date()})"
+        for row in leaderboard.itertuples()
+    ]
+    selected_label = st.selectbox("Pick a record", choices)
+    selected = leaderboard.iloc[choices.index(selected_label)]
+
+    st.write(f"Date: {selected['date_local'].date()}")
+    notes = selected.get("general_notes")
+    if isinstance(notes, str) and notes.strip():
+        st.write(f"General Notes: {notes.strip()}")
+    else:
+        st.write("General Notes: (empty)")
+
+
+def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
+    st.subheader("Goals")
+    if df.empty:
+        st.info("No data for goals yet.")
+        return
+
+    period = st.selectbox("Period", options=["week", "month"], index=0)
+    progress = build_goals_progress(df, period=period, goals=goals_cfg)
+    if progress.empty:
+        st.info("No goal-compatible metrics available for selected period.")
+    else:
+        period_label = progress.iloc[0]["period_label"]
+        period_start = pd.to_datetime(progress.iloc[0]["period_start"])
+        period_end = pd.to_datetime(progress.iloc[0]["period_end"])
+        today = pd.Timestamp.now().normalize()
+        elapsed_days = int((min(today, period_end) - period_start).days + 1)
+        total_days = int((period_end - period_start).days + 1)
+        st.caption(f"Current period: {period_label}. Missing days are ignored.")
+        st.caption(f"Progress in period: {elapsed_days}/{total_days} days elapsed.")
+
+        cards = st.columns(len(progress))
+        for idx, row in progress.reset_index(drop=True).iterrows():
+            avg_display = format_metric_value(float(row["avg_value"]), row["metric"])
+            goal_display = format_metric_value(float(row["goal"]), row["metric"])
+            status = "On track" if bool(row["on_track"]) else "Off track"
+            delta_suffix = f"{row['delta_pct']:+.1f}% vs goal"
+            with cards[idx]:
+                st.metric(
+                    label=f"{row['metric_label']} ({status})",
+                    value=avg_display,
+                    delta=delta_suffix,
+                    help=(
+                        f"Goal: {goal_display}. "
+                        f"Days with data: {int(row['days_with_data'])}/{elapsed_days}."
+                    ),
+                )
+                st.caption(f"Data days: {int(row['days_with_data'])}/{elapsed_days}")
+
+        st.markdown("#### Goal attainment")
+        attainment = progress.copy()
+        attainment["attainment_pct"] = np.where(
+            attainment["goal"] > 0,
+            100.0 * attainment["avg_value"] / attainment["goal"],
+            0.0,
+        )
+        attainment["track_label"] = attainment["on_track"].map(
+            lambda ok: "On track" if ok else "Off track"
+        )
+
+        fig_attain = px.bar(
+            attainment.sort_values("attainment_pct"),
+            x="attainment_pct",
+            y="metric_label",
+            orientation="h",
+            color="track_label",
+            color_discrete_map={"On track": "#3da35d", "Off track": "#d1495b"},
+            labels={
+                "attainment_pct": "Goal attainment (%)",
+                "metric_label": "Metric",
+                "track_label": "Status",
+            },
+            hover_data={
+                "avg_value": ":.2f",
+                "goal": ":.2f",
+                "delta_pct": ":+.1f",
+                "track_label": True,
+            },
+        )
+        max_attainment = float(attainment["attainment_pct"].max()) if not attainment.empty else 0.0
+        fig_attain.add_vline(
+            x=100,
+            line_dash="dash",
+            line_width=2,
+            line_color="#f1f3f5",
+        )
+        fig_attain.update_layout(
+            height=360,
+            xaxis=dict(range=[0, max(120.0, max_attainment * 1.1)]),
+        )
+        st.plotly_chart(fig_attain, use_container_width=True)
+
+        st.markdown("#### Actual vs goal markers")
+        marker_df = progress.sort_values("metric_label").copy()
+        fig_markers = go.Figure()
+        for row in marker_df.itertuples():
+            fig_markers.add_trace(
+                go.Scatter(
+                    x=[row.goal, row.avg_value],
+                    y=[row.metric_label, row.metric_label],
+                    mode="lines",
+                    line=dict(color="#aab2bf", width=3),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+        fig_markers.add_trace(
+            go.Scatter(
+                x=marker_df["goal"],
+                y=marker_df["metric_label"],
+                mode="markers",
+                marker=dict(color="#f4d35e", size=11, symbol="diamond"),
+                name="Goal",
+            )
+        )
+        fig_markers.add_trace(
+            go.Scatter(
+                x=marker_df["avg_value"],
+                y=marker_df["metric_label"],
+                mode="markers",
+                marker=dict(
+                    color=np.where(marker_df["on_track"], "#3da35d", "#d1495b"),
+                    size=12,
+                    symbol="circle",
+                ),
+                name="Actual",
+            )
+        )
+        fig_markers.update_layout(
+            height=360,
+            xaxis_title="Value",
+            yaxis_title="Metric",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_markers, use_container_width=True)
+
+        strength_rows = progress[progress["metric"] == "strength_elements"]
+        if not strength_rows.empty:
+            st.markdown("#### Strength progress")
+            strength_row = strength_rows.iloc[0]
+            st.progress(
+                min(max(float(strength_row["avg_value"]) / float(strength_row["goal"]), 0.0), 1.0),
+                text=(
+                    f"{int(strength_row['avg_value'])} / {int(strength_row['goal'])} elements"
+                    f" ({float(strength_row['delta_pct']):+.1f}%)"
+                ),
+            )
+
+        latest_frame = progress.copy()
+        latest_frame["avg_display"] = latest_frame.apply(
+            lambda row: format_metric_value(float(row["avg_value"]), row["metric"]), axis=1
+        )
+        latest_frame["goal_display"] = latest_frame.apply(
+            lambda row: format_metric_value(float(row["goal"]), row["metric"]), axis=1
+        )
+        latest_frame["delta_display"] = latest_frame["delta_pct"].map(lambda v: f"{v:+.1f}%")
+        latest_frame["track"] = latest_frame["on_track"].map(
+            lambda ok: "On track" if ok else "Off track"
+        )
+        st.markdown("#### Current period snapshot")
+        st.dataframe(
+            latest_frame[
+                ["metric_label", "avg_display", "goal_display", "delta_display", "track"]
+            ].rename(
+                columns={
+                    "metric_label": "metric",
+                    "avg_display": "average",
+                    "goal_display": "goal",
+                    "delta_display": "above/below",
+                    "track": "status",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def _anxiety_stress_tab(df: pd.DataFrame) -> None:
+    st.subheader("Anxiety status timeline")
+    period = st.selectbox(
+        "Period",
+        options=["week", "month"],
+        index=0,
+        key="anxiety_status_period",
+    )
+    status_counts = build_anxiety_status_counts(df, period=period)
+    if status_counts.empty:
+        st.info("No anxiety status data available.")
+        return
+
+    date_source = pd.DataFrame(
+        {
+            "date_local": pd.to_datetime(df["date_local"]),
+            "status": pd.to_numeric(df.get("anxiety_status_score"), errors="coerce").round(),
+        }
+    ).dropna(subset=["date_local", "status"])
+    date_source["status"] = date_source["status"].astype(int)
+    date_source = date_source[date_source["status"].between(1, 5)]
+    if period == "week":
+        date_source["period_start"] = date_source["date_local"].dt.to_period("W").dt.start_time
+    else:
+        date_source["period_start"] = date_source["date_local"].dt.to_period("M").dt.start_time
+
+    def _date_hover(series: pd.Series) -> str:
+        values = sorted({pd.to_datetime(value).date().isoformat() for value in series})
+        if not values:
+            return "(none)"
+        limited = values[:5]
+        text = ", ".join(limited)
+        if len(values) > 5:
+            text += ", ..."
+        return text
+
+    dates_grouped = (
+        date_source.groupby(["period_start", "status"], dropna=False)["date_local"]
+        .agg(_date_hover)
+        .reset_index(name="dates_hover")
+    )
+
+    all_statuses = pd.DataFrame({"status": [1, 2, 3, 4, 5]})
+    periods = status_counts[["period_start"]].drop_duplicates().assign(_join_key=1)
+    statuses = all_statuses.assign(_join_key=1)
+    complete = periods.merge(statuses, on="_join_key").drop(columns=["_join_key"])
+    status_counts = complete.merge(status_counts, on=["period_start", "status"], how="left")
+    status_counts["count"] = status_counts["count"].fillna(0)
+    status_counts = status_counts.merge(
+        dates_grouped,
+        on=["period_start", "status"],
+        how="left",
+    )
+    status_counts["dates_hover"] = status_counts["dates_hover"].fillna("(none)")
+
+    totals = status_counts.groupby("period_start", dropna=False)["count"].transform("sum")
+    status_counts["pct"] = np.where(totals > 0, 100.0 * status_counts["count"] / totals, 0.0)
+
+    fig_status = go.Figure()
+    for status in [1, 2, 3, 4, 5]:
+        subset = status_counts[status_counts["status"] == status].sort_values("period_start")
+        fig_status.add_trace(
+            go.Bar(
+                x=subset["period_start"],
+                y=subset["pct"],
+                name=f"Status {status}",
+                marker_color=ANXIETY_STATUS_COLORS[status],
+                customdata=subset[["count", "dates_hover"]].to_numpy(),
+                hovertemplate=(
+                    "Period: %{x|%Y-%m-%d}<br>"
+                    "Status: " + str(status) + "<br>"
+                    "Days: %{customdata[0]:.0f}<br>"
+                    "Share: %{y:.1f}%<br>"
+                    "Dates: %{customdata[1]}<extra></extra>"
+                ),
+            )
+        )
+
+    period_label = "Week" if period == "week" else "Month"
+    fig_status.update_layout(
+        barmode="stack",
+        bargap=0,
+        xaxis_title=period_label,
+        yaxis_title="Percentage of days (%)",
+        yaxis=dict(range=[0, 100]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        height=560,
+    )
+    st.plotly_chart(fig_status, use_container_width=True)
+
+    st.markdown("#### General notes by date")
+    notes_df = pd.DataFrame(
+        {
+            "date_local": pd.to_datetime(df["date_local"]),
+            "general_notes": df.get("general_notes"),
+        }
+    ).dropna(subset=["date_local"])
+    notes_df = notes_df.sort_values("date_local", ascending=False)
+    if notes_df.empty:
+        st.info("No dates available.")
+        return
+
+    options = [d.date() for d in notes_df["date_local"]]
+    selected_date = st.selectbox(
+        "Pick a date",
+        options=options,
+        key="anxiety_notes_date",
+    )
+    selected_row = notes_df[notes_df["date_local"].dt.date == selected_date].iloc[0]
+    notes_text = selected_row.get("general_notes")
+    if not isinstance(notes_text, str) or not notes_text.strip():
+        notes_text = "(empty)"
+    st.text_area("General Notes", value=notes_text, height=180, disabled=True)
+
+
+def _workouts_tab(df: pd.DataFrame) -> None:
+    st.subheader("Workouts")
+    if df.empty or "workout_count" not in df.columns:
+        st.info("Workout data is not available yet.")
+        return
+
+    workout_df = df.copy()
+    workout_df["date_local"] = pd.to_datetime(workout_df["date_local"])
+    workout_df["workout_count"] = pd.to_numeric(
+        workout_df["workout_count"], errors="coerce"
+    ).fillna(0)
+    workout_df = workout_df[workout_df["workout_count"] > 0].copy()
+    if workout_df.empty:
+        st.info("No workouts logged yet.")
+        return
+
+    period = st.selectbox(
+        "Granularity",
+        options=["day", "week", "month"],
+        index=1,
+        key="workouts_granularity",
+    )
+
+    if period == "day":
+        volume = workout_df.groupby("date_local", dropna=False)["workout_count"].sum().reset_index()
+        volume = volume.rename(columns={"date_local": "period_start"})
+    elif period == "week":
+        workout_df["period_start"] = pd.to_datetime(workout_df["week_start_monday"])
+        volume = (
+            workout_df.groupby("period_start", dropna=False)["workout_count"].sum().reset_index()
+        )
+    else:
+        workout_df["period_start"] = workout_df["date_local"].dt.to_period("M").dt.to_timestamp()
+        volume = (
+            workout_df.groupby("period_start", dropna=False)["workout_count"].sum().reset_index()
+        )
+
+    fig_volume = px.bar(
+        volume.sort_values("period_start"),
+        x="period_start",
+        y="workout_count",
+        labels={"period_start": "Period", "workout_count": "Workout entries"},
+        color_discrete_sequence=["#3da35d"],
+    )
+    fig_volume.update_layout(height=320)
+    st.plotly_chart(fig_volume, use_container_width=True)
+
+    expanded_rows: list[dict[str, object]] = []
+    for row in workout_df.itertuples():
+        raw_json = getattr(row, "workout_elements_json", None)
+        if isinstance(raw_json, str) and raw_json.strip():
+            try:
+                parsed = json.loads(raw_json)
+            except json.JSONDecodeError:
+                parsed = []
+        else:
+            parsed = []
+
+        if isinstance(parsed, list) and parsed:
+            for item in parsed:
+                name = item.get("name") if isinstance(item, dict) else None
+                w_type = item.get("type") if isinstance(item, dict) else None
+                elements = item.get("elements") if isinstance(item, dict) else None
+                element_value = None
+                if isinstance(elements, dict):
+                    element_value = elements.get("elements")
+                expanded_rows.append(
+                    {
+                        "date_local": row.date_local,
+                        "workout_name": name,
+                        "workout_type": w_type,
+                        "elements": element_value,
+                    }
+                )
+        else:
+            expanded_rows.append(
+                {
+                    "date_local": row.date_local,
+                    "workout_name": getattr(row, "workout_raw", None),
+                    "workout_type": getattr(row, "workout_type", None),
+                    "elements": None,
+                }
+            )
+
+    expanded_df = pd.DataFrame(expanded_rows)
+    if expanded_df.empty:
+        st.info("No parsed workout entries to visualize.")
+        return
+
+    st.markdown("#### Workout type mix")
+    type_counts = (
+        expanded_df["workout_type"]
+        .fillna("other")
+        .value_counts()
+        .rename_axis("workout_type")
+        .reset_index(name="count")
+    )
+    fig_types = px.pie(type_counts, names="workout_type", values="count", hole=0.4)
+    fig_types.update_layout(height=360)
+    st.plotly_chart(fig_types, use_container_width=True)
+
+    st.markdown("#### Distance / elements trends")
+    elements_df = expanded_df.dropna(subset=["elements"]).copy()
+    if not elements_df.empty:
+        elements_df["elements"] = pd.to_numeric(elements_df["elements"], errors="coerce")
+        elements_df = elements_df.dropna(subset=["elements"])
+        if not elements_df.empty:
+            fig_elements = px.scatter(
+                elements_df,
+                x="date_local",
+                y="elements",
+                color="workout_type",
+                hover_data=["workout_name"],
+                labels={"elements": "Elements"},
+            )
+            fig_elements.update_layout(height=360)
+            st.plotly_chart(fig_elements, use_container_width=True)
+
+    st.markdown("#### Workout log")
+    log = expanded_df.sort_values("date_local", ascending=False).copy()
+    log["date_local"] = pd.to_datetime(log["date_local"]).dt.date
+    st.dataframe(log, use_container_width=True, hide_index=True)
+
+
 def main() -> None:
     settings = load_settings()
+    runtime = load_runtime_config(settings.pipeline_config_path)
+    goals_cfg = runtime.goals.model_dump()
     st.set_page_config(page_title="Life dashboard", page_icon=":bar_chart:", layout="wide")
 
     with st.sidebar:
@@ -459,6 +906,10 @@ def main() -> None:
             "Correlations & Lags",
             "Sleep + Recovery",
             "Data Quality",
+            "Leaderboard",
+            "Goals",
+            "Anxiety & Stress",
+            "Workouts",
         ]
     )
 
@@ -476,6 +927,14 @@ def main() -> None:
         _sleep_tab(df)
     with tabs[6]:
         _quality_tab(df, metrics)
+    with tabs[7]:
+        _leaderboard_tab(df)
+    with tabs[8]:
+        _goals_tab(df, goals_cfg)
+    with tabs[9]:
+        _anxiety_stress_tab(df)
+    with tabs[10]:
+        _workouts_tab(df)
 
 
 if __name__ == "__main__":

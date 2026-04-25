@@ -16,3 +16,9 @@ fallback_days = 30
 
 [bridge]
 fallback_days = 365
+
+[goals]
+steps_per_day = 7500
+sleep_hours_per_day = 7.0
+strength_elements_per_week = 300
+strength_elements_per_month = 1000

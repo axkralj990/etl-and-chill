@@ -4,7 +4,7 @@ import csv
 import json
 import uuid
 from contextlib import suppress
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,7 @@ def _raw_row(
         "source_id": source_id,
         "day": date.fromisoformat(day) if isinstance(day, str) else None,
         "payload": payload,
-        "ingested_at": datetime.utcnow(),
+        "ingested_at": datetime.now(UTC),
     }
 
 
@@ -209,6 +209,7 @@ def parse_legacy_notion_csv(path: Path) -> list[dict[str, Any]]:
                 "Supplements": {"rich_text": [{"plain_text": row.get("Supplements", "")}]},
                 "Weather": {"rich_text": [{"plain_text": row.get("Weather", "")}]},
                 "Learned": {"rich_text": [{"plain_text": row.get("Learned", "")}]},
+                "Workout": {"rich_text": [{"plain_text": row.get("Workout", "")}]},
             }
             rows.append(
                 {

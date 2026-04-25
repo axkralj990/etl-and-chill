@@ -25,6 +25,9 @@ def _notion_page() -> dict:
             "Mindful (min)": {"number": 20.0},
             "Points": {"number": 8.0},
             "Substances": {"rich_text": [{"plain_text": "C"}]},
+            "Workout": {
+                "rich_text": [{"plain_text": "Strength - 150 (https://www.notion.so/strength-150)"}]
+            },
             "General Notes": {"rich_text": [{"plain_text": "Solid day."}]},
             "Supplements": {"rich_text": [{"plain_text": "omega3"}]},
             "Weather": {"rich_text": [{"plain_text": "cold"}]},
@@ -148,3 +151,17 @@ def test_mocked_pipeline_to_features_table(tmp_path) -> None:
     assert row[10] == 88
     assert row[11] == 3
     assert row[12] == 1
+
+    notion_row = storage.conn.execute(
+        """
+        select workout_raw, workout_type, workout_count, workout_elements_json
+        from canonical_notion_daily
+        where date_local = ?
+        """,
+        [date(2026, 1, 6)],
+    ).fetchone()
+    assert notion_row is not None
+    assert notion_row[0] == "Strength - 150 (https://www.notion.so/strength-150)"
+    assert notion_row[1] == "strength"
+    assert notion_row[2] == 1
+    assert '"points": 150' not in (notion_row[3] or "")

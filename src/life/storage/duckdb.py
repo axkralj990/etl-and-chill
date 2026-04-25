@@ -56,6 +56,10 @@ class DuckDBStorage:
                 cold_min double,
                 cigarettes_count integer,
                 substances_raw varchar,
+                workout_raw varchar,
+                workout_type varchar,
+                workout_count integer,
+                workout_elements_json varchar,
                 general_notes varchar,
                 supplements varchar,
                 weather varchar,
@@ -226,6 +230,20 @@ class DuckDBStorage:
         for column, dtype in desired.items():
             if column not in columns:
                 self.conn.execute(f"alter table canonical_oura_daily add column {column} {dtype}")
+
+        notion_columns = {
+            row[1]
+            for row in self.conn.execute("pragma table_info('canonical_notion_daily')").fetchall()
+        }
+        notion_desired = {
+            "workout_raw": "varchar",
+            "workout_type": "varchar",
+            "workout_count": "integer",
+            "workout_elements_json": "varchar",
+        }
+        for column, dtype in notion_desired.items():
+            if column not in notion_columns:
+                self.conn.execute(f"alter table canonical_notion_daily add column {column} {dtype}")
 
         df_columns = {
             row[1] for row in self.conn.execute("pragma table_info('daily_features')").fetchall()
