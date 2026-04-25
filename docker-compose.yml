@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  life-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: life-dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      TZ: Europe/Ljubljana
+      TIMEZONE: Europe/Ljubljana
+      DUCKDB_PATH: /app/data/life.duckdb
+      DATA_DIR: /app/data
+      PIPELINE_CONFIG_PATH: /app/config/pipeline.toml
+      NOTION_TOKEN: ${NOTION_TOKEN}
+      NOTION_DATABASE_ID: ${NOTION_DATABASE_ID}
+      OURA_ACCESS_TOKEN: ${OURA_ACCESS_TOKEN}
+      OURA_REFRESH_TOKEN: ${OURA_REFRESH_TOKEN:-}
+      OURA_AUTO_REFRESH: ${OURA_AUTO_REFRESH:-true}
+      OURA_CLIENT_ID: ${OURA_CLIENT_ID:-}
+      OURA_CLIENT_SECRET: ${OURA_CLIENT_SECRET:-}
+      OURA_REDIRECT_URI: ${OURA_REDIRECT_URI:-}
+      OURA_TOKEN_STORE_PATH: /app/data/oura_tokens.json
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config:ro

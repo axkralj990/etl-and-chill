@@ -182,3 +182,32 @@ Core tables:
 - `daily_features`
 - `sync_state`
 - `pipeline_runs`
+
+### Docker (Synology-ready)
+
+Build and run:
+
+```bash
+docker compose up -d --build
+```
+
+The container runs:
+
+- Streamlit dashboard on port `8501`
+- Cron sync job twice daily at `09:00` and `22:00` (container timezone)
+
+Default bind mounts in `docker-compose.yml`:
+
+- `./data:/app/data` (DuckDB + token store)
+- `./logs:/app/logs` (app/sync logs)
+- `./config:/app/config:ro` (runtime pipeline config)
+
+Ensure `.env` contains at minimum:
+
+- `NOTION_TOKEN`
+- `NOTION_DATABASE_ID`
+- `OURA_ACCESS_TOKEN` (or OAuth refresh setup)
+
+Cron writes to:
+
+- `/var/log/life-sync.log` inside container
