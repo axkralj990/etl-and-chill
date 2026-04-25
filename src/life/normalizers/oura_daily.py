@@ -33,7 +33,7 @@ class OuraDailyNormalizer(BaseNormalizer):
         items = sample.get("items")
         if not isinstance(items, list):
             return None
-        numeric = [float(v) for v in items if isinstance(v, (int, float))]
+        numeric = [float(v) for v in items if isinstance(v, int | float)]
         if not numeric:
             return None
         return sum(numeric) / len(numeric)
@@ -97,12 +97,8 @@ class OuraDailyNormalizer(BaseNormalizer):
                 normalized["sleep_total_duration"] = self._as_int(
                     record.get("total_sleep_duration")
                 )
-                normalized["sleep_deep_duration"] = self._as_int(
-                    record.get("deep_sleep_duration")
-                )
-                normalized["sleep_rem_duration"] = self._as_int(
-                    record.get("rem_sleep_duration")
-                )
+                normalized["sleep_deep_duration"] = self._as_int(record.get("deep_sleep_duration"))
+                normalized["sleep_rem_duration"] = self._as_int(record.get("rem_sleep_duration"))
                 normalized["sleep_light_duration"] = self._as_int(
                     record.get("light_sleep_duration")
                 )
@@ -121,9 +117,7 @@ class OuraDailyNormalizer(BaseNormalizer):
 
             elif endpoint == OuraDailyEndpoint.DAILY_SPO2:
                 spo2_obj = self._as_dict(record.get("spo2_percentage"))
-                normalized["spo2_average"] = self._as_float(
-                    spo2_obj.get("average")
-                )
+                normalized["spo2_average"] = self._as_float(spo2_obj.get("average"))
 
             elif endpoint == OuraDailyEndpoint.DAILY_STRESS:
                 avg_candidate = record.get("daytime_stress_avg")

@@ -14,9 +14,7 @@ class Settings(BaseSettings):
 
     duckdb_path: Path = Field(default=Path("data/life.duckdb"), alias="DUCKDB_PATH")
     data_dir: Path = Field(default=Path("data"), alias="DATA_DIR")
-    legacy_path: Path = Field(
-        default=Path("../life_legacy/data/raw"), alias="LEGACY_PATH"
-    )
+    legacy_path: Path = Field(default=Path("../life_legacy/data/raw"), alias="LEGACY_PATH")
     pipeline_config_path: Path = Field(
         default=Path("config/pipeline.toml"), alias="PIPELINE_CONFIG_PATH"
     )

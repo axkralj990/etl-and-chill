@@ -225,9 +225,7 @@ class DuckDBStorage:
         }
         for column, dtype in desired.items():
             if column not in columns:
-                self.conn.execute(
-                    f"alter table canonical_oura_daily add column {column} {dtype}"
-                )
+                self.conn.execute(f"alter table canonical_oura_daily add column {column} {dtype}")
 
         df_columns = {
             row[1] for row in self.conn.execute("pragma table_info('daily_features')").fetchall()

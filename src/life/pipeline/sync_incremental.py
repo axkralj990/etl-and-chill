@@ -22,8 +22,7 @@ def run(storage: DuckDBStorage, settings: Settings) -> None:
     missing_database = not settings.notion_database_id
     if missing_oura or missing_notion or missing_database:
         raise ValueError(
-            "Incremental mode requires OURA_ACCESS_TOKEN, "
-            "NOTION_TOKEN, and NOTION_DATABASE_ID"
+            "Incremental mode requires OURA_ACCESS_TOKEN, NOTION_TOKEN, and NOTION_DATABASE_ID"
         )
 
     notion_connector = NotionConnector(settings.notion_token, settings.notion_database_id)
