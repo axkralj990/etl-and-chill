@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
 from plotly.subplots import make_subplots
 
@@ -29,11 +30,25 @@ from life.pipeline.runtime_config import load_runtime_config
 from life.pipeline.shared import finalize_features, run_notion_sync
 from life.storage.duckdb import DuckDBStorage
 
+THEME_PRESETS: dict[str, dict[str, str]] = {
+    "Deep Ocean": {
+        "bg": "#08121d",
+        "card": "#102638",
+        "text": "#e9f2fb",
+        "plot_bg": "#08121d",
+        "paper_bg": "#08121d",
+        "grid": "#26435a",
+        "axis": "#b8c9da",
+    }
+}
 
-def _theme_css() -> str:
-    bg = "#0f1117"
-    card = "#1a1f2b"
-    text = "#e6e8ec"
+PLOT_BG_HEX = "#08121d"
+
+
+def _theme_css(theme: dict[str, str]) -> str:
+    bg = theme["bg"]
+    card = theme["card"]
+    text = theme["text"]
 
     return f"""
     <style>
@@ -46,6 +61,38 @@ def _theme_css() -> str:
     }}
     </style>
     """
+
+
+def _apply_plotly_theme(theme_name: str, theme: dict[str, str]) -> None:
+    template_name = f"life_{theme_name.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
+    base = pio.templates["plotly_dark"]
+    custom = go.layout.Template(base)
+    custom.layout.paper_bgcolor = theme["paper_bg"]
+    custom.layout.plot_bgcolor = theme["plot_bg"]
+    custom.layout.font = dict(color=theme["text"])
+    custom.layout.xaxis = dict(
+        gridcolor=theme["grid"],
+        zerolinecolor=theme["grid"],
+        linecolor=theme["axis"],
+        tickcolor=theme["axis"],
+    )
+    custom.layout.yaxis = dict(
+        gridcolor=theme["grid"],
+        zerolinecolor=theme["grid"],
+        linecolor=theme["axis"],
+        tickcolor=theme["axis"],
+    )
+    pio.templates[template_name] = custom
+    pio.templates.default = template_name
+    px.defaults.template = template_name
+
+
+def _plotly(fig: go.Figure | go.FigureWidget) -> None:
+    fig.update_layout(
+        paper_bgcolor=PLOT_BG_HEX,
+        plot_bgcolor=PLOT_BG_HEX,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _safe_delta(today: float | int | None, prev: float | int | None) -> str:
@@ -89,7 +136,7 @@ def _home_tab(df: pd.DataFrame, metrics: list[str]) -> None:
     for metric in spark_metrics:
         fig = px.line(recent, x="date_local", y=metric, markers=True)
         fig.update_layout(height=180, margin=dict(l=10, r=10, t=20, b=10), title=metric)
-        st.plotly_chart(fig, use_container_width=True)
+        _plotly(fig)
 
     st.markdown("#### Weekly rollup")
     steps_sum = recent["steps"].sum(min_count=1) if "steps" in recent.columns else np.nan
@@ -195,7 +242,7 @@ def _bubble_tab(df: pd.DataFrame, metrics: list[str]) -> None:
             f"Size metric `{size}` had non-positive values; bubble sizes were shifted to stay > 0."
         )
     fig.update_layout(height=560)
-    st.plotly_chart(fig, use_container_width=True)
+    _plotly(fig)
 
 
 def _trends_tab(df: pd.DataFrame, metrics: list[str]) -> None:
@@ -253,7 +300,7 @@ def _trends_tab(df: pd.DataFrame, metrics: list[str]) -> None:
         yaxis=dict(title=x_metric),
         yaxis2=dict(title=y_metric, overlaying="y", side="right"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    _plotly(fig)
 
 
 def _period_summary_tab(df: pd.DataFrame, metrics: list[str]) -> None:
@@ -304,7 +351,7 @@ def _corr_tab(df: pd.DataFrame, metrics: list[str]) -> None:
         corr = df[chosen].corr(numeric_only=True)
         fig = px.imshow(corr, color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
         fig.update_layout(height=620)
-        st.plotly_chart(fig, use_container_width=True)
+        _plotly(fig)
 
     st.markdown("#### Lag explorer")
     c1, c2, c3 = st.columns(3)
@@ -317,7 +364,7 @@ def _corr_tab(df: pd.DataFrame, metrics: list[str]) -> None:
 
     fig = px.scatter(scatter_df, x="x_lagged", y=y, hover_data=["date_local"])
     fig.update_layout(height=460, xaxis_title=f"{x} lagged by {lag}d")
-    st.plotly_chart(fig, use_container_width=True)
+    _plotly(fig)
 
 
 def _sleep_tab(df: pd.DataFrame) -> None:
@@ -357,7 +404,7 @@ def _sleep_tab(df: pd.DataFrame) -> None:
         )
         fig = px.bar(stage_df, x="date_local", y="hours", color="stage")
         fig.update_layout(height=430)
-        st.plotly_chart(fig, use_container_width=True)
+        _plotly(fig)
 
     st.markdown("#### Sleep physiology")
     metric_specs = [
@@ -406,7 +453,7 @@ def _sleep_tab(df: pd.DataFrame) -> None:
 
         fig.update_xaxes(title_text="Date", row=len(metric_specs), col=1)
         fig.update_layout(height=240 * len(metric_specs), margin=dict(l=10, r=10, t=50, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        _plotly(fig)
 
 
 def _quality_tab(df: pd.DataFrame, metrics: list[str]) -> None:
@@ -580,7 +627,7 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
             height=360,
             xaxis=dict(range=[0, max(120.0, max_attainment * 1.1)]),
         )
-        st.plotly_chart(fig_attain, use_container_width=True)
+        _plotly(fig_attain)
 
         st.markdown("#### Progress vs on-course line")
         period_dates = pd.date_range(start=period_start, end=period_end, freq="D")
@@ -646,7 +693,7 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
                     margin=dict(l=8, r=8, t=40, b=8),
                     showlegend=False,
                 )
-                st.plotly_chart(fig_steps, use_container_width=True)
+                _plotly(fig_steps)
 
         with chart_cols[1]:
             sleep_row = progress[progress["metric"] == "sleep_total_hours"]
@@ -695,7 +742,7 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
                     margin=dict(l=8, r=8, t=40, b=8),
                     showlegend=False,
                 )
-                st.plotly_chart(fig_sleep, use_container_width=True)
+                _plotly(fig_sleep)
 
         with chart_cols[2]:
             strength_row = progress[progress["metric"] == "strength_elements"]
@@ -777,7 +824,7 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
                     margin=dict(l=8, r=8, t=40, b=8),
                     showlegend=False,
                 )
-                st.plotly_chart(fig_workouts, use_container_width=True)
+                _plotly(fig_workouts)
 
         with chart_cols[3]:
             mindful_row = progress[progress["metric"] == "mindful_min"]
@@ -825,7 +872,7 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
                     margin=dict(l=8, r=8, t=40, b=8),
                     showlegend=False,
                 )
-                st.plotly_chart(fig_mindful, use_container_width=True)
+                _plotly(fig_mindful)
 
         strength_rows = progress[progress["metric"] == "strength_elements"]
         if not strength_rows.empty:
@@ -956,7 +1003,7 @@ def _anxiety_stress_tab(df: pd.DataFrame) -> None:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
         height=560,
     )
-    st.plotly_chart(fig_status, use_container_width=True)
+    _plotly(fig_status)
 
     st.markdown("#### General notes by date")
     notes_df = pd.DataFrame(
@@ -1028,7 +1075,7 @@ def _workouts_tab(df: pd.DataFrame) -> None:
         color_discrete_sequence=["#3da35d"],
     )
     fig_volume.update_layout(height=320)
-    st.plotly_chart(fig_volume, use_container_width=True)
+    _plotly(fig_volume)
 
     expanded_rows: list[dict[str, object]] = []
     for row in workout_df.itertuples():
@@ -1082,7 +1129,7 @@ def _workouts_tab(df: pd.DataFrame) -> None:
     )
     fig_types = px.pie(type_counts, names="workout_type", values="count", hole=0.4)
     fig_types.update_layout(height=360)
-    st.plotly_chart(fig_types, use_container_width=True)
+    _plotly(fig_types)
 
     st.markdown("#### Distance / elements trends")
     elements_df = expanded_df.dropna(subset=["elements"]).copy()
@@ -1099,7 +1146,7 @@ def _workouts_tab(df: pd.DataFrame) -> None:
                 labels={"elements": "Elements"},
             )
             fig_elements.update_layout(height=360)
-            st.plotly_chart(fig_elements, use_container_width=True)
+            _plotly(fig_elements)
 
     st.markdown("#### Workout log")
     log = expanded_df.sort_values("date_local", ascending=False).copy()
@@ -1361,7 +1408,7 @@ def _bayes_regression_tab(df: pd.DataFrame, metrics: list[str]) -> None:
             yaxis_title="Term",
             violinmode="overlay",
         )
-        st.plotly_chart(fig_coef, use_container_width=True)
+        _plotly(fig_coef)
 
     st.markdown("#### Posterior predictive check")
     ppc = result.ppc.copy().sort_values("date_local")
@@ -1406,7 +1453,7 @@ def _bayes_regression_tab(df: pd.DataFrame, metrics: list[str]) -> None:
         )
     )
     fig_ppc.update_layout(height=420, xaxis_title="Date", yaxis_title=target)
-    st.plotly_chart(fig_ppc, use_container_width=True)
+    _plotly(fig_ppc)
 
     st.markdown("#### Draw summary")
     st.dataframe(
@@ -1574,9 +1621,13 @@ def main() -> None:
     with st.sidebar:
         st.title("Life dashboard")
         db_path_str = st.text_input("DuckDB path", value=str(settings.duckdb_path))
+        theme_name = "Deep Ocean"
+        st.caption("Theme: Deep Ocean")
         st.caption("Home is focused on today + last 7 days.")
 
-    st.markdown(_theme_css(), unsafe_allow_html=True)
+    selected_theme = THEME_PRESETS[theme_name]
+    _apply_plotly_theme(theme_name, selected_theme)
+    st.markdown(_theme_css(selected_theme), unsafe_allow_html=True)
 
     df = load_daily_frame(Path(db_path_str))
     metrics = metric_columns(df)
