@@ -1,0 +1,18 @@
+[oura]
+endpoints = [
+  "daily_activity",
+  "daily_sleep",
+  "sleep",
+  "daily_readiness",
+  "daily_spo2",
+  "daily_stress",
+  "daily_resilience",
+  "daily_cardiovascular_age",
+]
+
+[incremental]
+lookback_days = 7
+fallback_days = 30
+
+[bridge]
+fallback_days = 365

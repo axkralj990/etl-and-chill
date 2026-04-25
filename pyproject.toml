@@ -1,0 +1,53 @@
+[project]
+name = "life"
+version = "0.1.0"
+description = "Personal health and life analytics pipeline"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.2.2",
+    "pandas>=2.2.3",
+    "plotly>=6.0.1",
+    "pyarrow>=20.0.0",
+    "pydantic>=2.11.3",
+    "pydantic-settings>=2.8.1",
+    "python-dateutil>=2.9.0.post0",
+    "python-dotenv>=1.1.0",
+    "requests>=2.32.3",
+    "streamlit>=1.45.1",
+    "structlog>=25.3.0",
+]
+
+[project.optional-dependencies]
+inference = [
+    "cmdstanpy>=1.2.5",
+]
+
+[project.scripts]
+life = "life.cli:main"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.401",
+    "pytest>=8.3.5",
+    "ruff>=0.11.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "N", "RUF"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.uv]
+package = true
