@@ -129,8 +129,6 @@ class NotionDailyNormalizer(BaseNormalizer):
             return "climbing"
         if lower.startswith("hiking"):
             return "hiking"
-        if lower.startswith("yoga"):
-            return "yoga"
         if lower.startswith("walk"):
             return "walk"
         if lower.startswith("cycling") or lower.startswith("bike"):

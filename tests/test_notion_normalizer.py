@@ -139,3 +139,20 @@ def test_other_sports_keep_name_and_ignore_elements() -> None:
     out = NotionDailyNormalizer().normalize([row])
     assert out[0]["workout_type"] == "mixed"
     assert '"elements": {}' in (out[0]["workout_elements_json"] or "")
+
+
+def test_yoga_maps_to_other() -> None:
+    row = {
+        "id": "abc",
+        "properties": {
+            "Name": {"title": [{"plain_text": "Friday, August 30, 2024"}]},
+            "Date": {"date": {"start": "2024-08-30"}},
+            "Anxiety Status": {"select": {"name": "2"}},
+            "Physical Status": {"select": {"name": "good"}},
+            "Productivity": {"select": {"name": "high"}},
+            "Workout": {"rich_text": [{"plain_text": "Yoga - Morning Flow"}]},
+        },
+    }
+
+    out = NotionDailyNormalizer().normalize([row])
+    assert out[0]["workout_type"] == "other"

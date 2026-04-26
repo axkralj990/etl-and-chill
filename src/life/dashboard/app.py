@@ -1053,30 +1053,6 @@ def _workouts_tab(df: pd.DataFrame) -> None:
         key="workouts_granularity",
     )
 
-    if period == "day":
-        volume = workout_df.groupby("date_local", dropna=False)["workout_count"].sum().reset_index()
-        volume = volume.rename(columns={"date_local": "period_start"})
-    elif period == "week":
-        workout_df["period_start"] = pd.to_datetime(workout_df["week_start_monday"])
-        volume = (
-            workout_df.groupby("period_start", dropna=False)["workout_count"].sum().reset_index()
-        )
-    else:
-        workout_df["period_start"] = workout_df["date_local"].dt.to_period("M").dt.to_timestamp()
-        volume = (
-            workout_df.groupby("period_start", dropna=False)["workout_count"].sum().reset_index()
-        )
-
-    fig_volume = px.bar(
-        volume.sort_values("period_start"),
-        x="period_start",
-        y="workout_count",
-        labels={"period_start": "Period", "workout_count": "Workout entries"},
-        color_discrete_sequence=["#3da35d"],
-    )
-    fig_volume.update_layout(height=320)
-    _plotly(fig_volume)
-
     expanded_rows: list[dict[str, object]] = []
     for row in workout_df.itertuples():
         raw_json = getattr(row, "workout_elements_json", None)
@@ -1119,17 +1095,114 @@ def _workouts_tab(df: pd.DataFrame) -> None:
         st.info("No parsed workout entries to visualize.")
         return
 
-    st.markdown("#### Workout type mix")
-    type_counts = (
+    expanded_df["date_local"] = pd.to_datetime(expanded_df["date_local"], errors="coerce")
+    expanded_df = expanded_df.dropna(subset=["date_local"])
+    expanded_df["workout_type"] = expanded_df["workout_type"].fillna("other")
+
+    global_type_counts = (
         expanded_df["workout_type"]
-        .fillna("other")
         .value_counts()
         .rename_axis("workout_type")
         .reset_index(name="count")
     )
-    fig_types = px.pie(type_counts, names="workout_type", values="count", hole=0.4)
-    fig_types.update_layout(height=360)
-    _plotly(fig_types)
+    type_order = global_type_counts["workout_type"].tolist()
+
+    donut_year_options = ["All years", *sorted(expanded_df["date_local"].dt.year.unique().tolist())]
+    donut_year = st.selectbox(
+        "Donut year",
+        options=donut_year_options,
+        index=0,
+        key="workouts_donut_year",
+    )
+
+    st.markdown("#### Workout type mix")
+    donut_df = expanded_df.copy()
+    if donut_year != "All years":
+        donut_df = donut_df[donut_df["date_local"].dt.year == int(donut_year)]
+
+    type_counts = (
+        donut_df["workout_type"]
+        .value_counts()
+        .rename_axis("workout_type")
+        .reset_index(name="count")
+    )
+    preferred_colors = {
+        "swimming": "#4ea8de",
+        "bjj": "#d1495b",
+        "strength": "#f77f00",
+        "running": "#2a9d8f",
+        "cycling": "#f4d35e",
+        "hiking": "#90be6d",
+        "climbing": "#9b5de5",
+        "walk": "#43aa8b",
+        "other": "#adb5bd",
+        "mixed": "#577590",
+    }
+    palette_fallback = [
+        "#4ea8de",
+        "#2a9d8f",
+        "#f4d35e",
+        "#f77f00",
+        "#d1495b",
+        "#90be6d",
+        "#43aa8b",
+        "#577590",
+        "#9b5de5",
+        "#adb5bd",
+    ]
+    color_map: dict[str, str] = {}
+    fallback_idx = 0
+    for workout_type in type_order:
+        if workout_type in preferred_colors:
+            color_map[workout_type] = preferred_colors[workout_type]
+        else:
+            color_map[workout_type] = palette_fallback[fallback_idx % len(palette_fallback)]
+            fallback_idx += 1
+
+    if period == "day":
+        expanded_df["period_start"] = expanded_df["date_local"].dt.normalize()
+    elif period == "week":
+        expanded_df["period_start"] = expanded_df["date_local"].dt.to_period("W").dt.start_time
+    else:
+        expanded_df["period_start"] = expanded_df["date_local"].dt.to_period("M").dt.to_timestamp()
+
+    volume_by_type = (
+        expanded_df.groupby(["period_start", "workout_type"], dropna=False)
+        .size()
+        .reset_index(name="workout_count")
+        .sort_values("period_start")
+    )
+    fig_volume = px.bar(
+        volume_by_type,
+        x="period_start",
+        y="workout_count",
+        color="workout_type",
+        barmode="stack",
+        color_discrete_map=color_map,
+        category_orders={"workout_type": type_order},
+        labels={
+            "period_start": "Period",
+            "workout_count": "Workout entries",
+            "workout_type": "Workout type",
+        },
+    )
+    fig_volume.update_layout(height=320)
+    _plotly(fig_volume)
+
+    if type_counts.empty:
+        st.info("No workouts available for selected donut year.")
+    else:
+        fig_types = px.pie(
+            type_counts,
+            names="workout_type",
+            values="count",
+            hole=0.4,
+            color="workout_type",
+            color_discrete_map=color_map,
+            category_orders={"workout_type": type_order},
+        )
+        fig_types.update_layout(height=360)
+        _plotly(fig_types)
 
     st.markdown("#### Distance / elements trends")
     elements_df = expanded_df.dropna(subset=["elements"]).copy()
@@ -1142,6 +1215,8 @@ def _workouts_tab(df: pd.DataFrame) -> None:
                 x="date_local",
                 y="elements",
                 color="workout_type",
+                color_discrete_map=color_map,
+                category_orders={"workout_type": type_order},
                 hover_data=["workout_name"],
                 labels={"elements": "Elements"},
             )
