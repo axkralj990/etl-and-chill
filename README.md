@@ -46,6 +46,7 @@ Pipeline runbook:
 - `docs/etl_architecture.md`
 - `docs/pipeline_extensions.md`
 - `docs/master_learning_guide.md`
+- `docs/ml_approaches_for_life_data.md`
 
 5. Tune runtime pipeline config in `config/pipeline.toml`:
 

@@ -654,18 +654,76 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
         st.info("No data for goals yet.")
         return
 
+    goals_df = df.copy()
+    goals_df["date_local"] = pd.to_datetime(goals_df["date_local"], errors="coerce")
+    goals_df = goals_df.dropna(subset=["date_local"])
+    if goals_df.empty:
+        st.info("No dated rows available for goals yet.")
+        return
+
     period = st.selectbox("Period", options=["week", "month"], index=0)
-    progress = build_goals_progress(df, period=period, goals=goals_cfg)
+    today = pd.Timestamp.now().normalize()
+    selected_ref_date = today
+
+    if period == "week":
+        week_starts = (
+            goals_df["date_local"].dt.to_period("W").dt.start_time.drop_duplicates().sort_values()
+        )
+        if not week_starts.empty:
+            week_labels = [
+                f"{week_start.isocalendar().year}-W{week_start.isocalendar().week:02d}"
+                for week_start in week_starts
+            ]
+            default_week_start = today - pd.Timedelta(days=today.weekday())
+            default_idx = 0
+            for idx, week_start in enumerate(week_starts):
+                if week_start == default_week_start:
+                    default_idx = idx
+                    break
+            selected_week_label = st.selectbox(
+                "Week",
+                options=week_labels,
+                index=default_idx,
+                key="goals_week_select",
+            )
+            selected_week_idx = week_labels.index(selected_week_label)
+            selected_ref_date = pd.Timestamp(week_starts.iloc[selected_week_idx])
+    else:
+        month_starts = (
+            goals_df["date_local"].dt.to_period("M").dt.start_time.drop_duplicates().sort_values()
+        )
+        if not month_starts.empty:
+            month_labels = [month_start.strftime("%Y-%m") for month_start in month_starts]
+            default_month_start = today.to_period("M").start_time
+            default_idx = 0
+            for idx, month_start in enumerate(month_starts):
+                if month_start == default_month_start:
+                    default_idx = idx
+                    break
+            selected_month_label = st.selectbox(
+                "Month",
+                options=month_labels,
+                index=default_idx,
+                key="goals_month_select",
+            )
+            selected_month_idx = month_labels.index(selected_month_label)
+            selected_ref_date = pd.Timestamp(month_starts.iloc[selected_month_idx])
+
+    progress = build_goals_progress(
+        df,
+        period=period,
+        goals=goals_cfg,
+        ref_date=selected_ref_date,
+    )
     if progress.empty:
         st.info("No goal-compatible metrics available for selected period.")
     else:
         period_label = progress.iloc[0]["period_label"]
         period_start = pd.to_datetime(progress.iloc[0]["period_start"])
         period_end = pd.to_datetime(progress.iloc[0]["period_end"])
-        today = pd.Timestamp.now().normalize()
         elapsed_days = int((min(today, period_end) - period_start).days + 1)
         total_days = int((period_end - period_start).days + 1)
-        st.caption(f"Current period: {period_label}. Missing days are ignored.")
+        st.caption(f"Selected period: {period_label}. Missing days are ignored.")
         st.caption(f"Progress in period: {elapsed_days}/{total_days} days elapsed.")
 
         cards = st.columns(len(progress))
@@ -1620,6 +1678,304 @@ def _bayes_regression_tab(df: pd.DataFrame, metrics: list[str]) -> None:
     )
 
 
+def _feature_clusters_tab(df: pd.DataFrame, metrics: list[str]) -> None:
+    st.subheader("Feature clusters")
+    if df.empty or not metrics:
+        st.info("No numeric data available for clustering.")
+        return
+
+    default_features = [
+        "sleep_avg_hr",
+        "sleep_avg_hrv",
+        "sleep_temperature_deviation",
+        "sleep_total_hours",
+        "sleep_efficiency_pct",
+        "sleep_deep_share_pct",
+        "sleep_rem_share_pct",
+        "steps",
+        "readiness_score",
+        "daytime_stress_avg",
+    ]
+    selected_defaults = [feature for feature in default_features if feature in metrics]
+    features = st.multiselect(
+        "Features",
+        options=metrics,
+        default=selected_defaults,
+        key="cluster_features",
+    )
+
+    c1, c2 = st.columns(2)
+    k = c1.slider("Number of clusters", min_value=2, max_value=8, value=4, key="cluster_k")
+    granularity = c2.selectbox(
+        "Timeline granularity",
+        options=["day", "week"],
+        index=0,
+        key="cluster_granularity",
+    )
+
+    run_cluster = st.button("Run clustering", key="run_feature_clustering")
+    if run_cluster:
+        if len(features) < 2:
+            st.warning("Select at least two features for clustering.")
+            return
+
+        try:
+            from sklearn.cluster import KMeans
+            from sklearn.decomposition import PCA
+            from sklearn.preprocessing import StandardScaler
+        except ModuleNotFoundError:
+            st.error("scikit-learn is missing. Install dependencies with `uv sync`.")
+            return
+
+        work = pd.DataFrame({"date_local": pd.to_datetime(df["date_local"], errors="coerce")})
+        for feature in features:
+            work[feature] = pd.to_numeric(df[feature], errors="coerce")
+        work = work.dropna(subset=["date_local", *features]).sort_values("date_local")
+        if len(work) < k:
+            st.warning(
+                f"Need at least {k} complete rows for {k} clusters. "
+                f"Current complete rows: {len(work)}."
+            )
+            return
+
+        scaler = StandardScaler()
+        x_scaled = scaler.fit_transform(work[features])
+
+        model = KMeans(n_clusters=k, random_state=42, n_init=20)
+        labels = model.fit_predict(x_scaled)
+
+        pca_components = 2 if x_scaled.shape[1] >= 2 else 1
+        pca = PCA(n_components=pca_components)
+        pcs = pca.fit_transform(x_scaled)
+
+        clustered = work[["date_local"]].copy()
+        clustered["cluster_id"] = labels.astype(int)
+        clustered["cluster"] = clustered["cluster_id"].map(lambda val: f"Cluster {val}")
+        clustered["pc1"] = pcs[:, 0]
+        clustered["pc2"] = pcs[:, 1] if pca_components > 1 else 0.0
+
+        profile = pd.DataFrame(x_scaled, columns=features)
+        profile["cluster"] = clustered["cluster"].to_numpy()
+        profile = profile.groupby("cluster", dropna=False)[features].mean().reset_index()
+
+        st.session_state["cluster_result"] = {
+            "clustered": clustered,
+            "profile": profile,
+            "features": features,
+            "explained_var": pca.explained_variance_ratio_.tolist(),
+            "k": k,
+        }
+
+    result = st.session_state.get("cluster_result")
+    if not result:
+        st.caption("Choose features and run clustering.")
+        return
+
+    clustered = result["clustered"]
+    profile = result["profile"]
+    explained_var = result["explained_var"]
+
+    cluster_ids = sorted(pd.to_numeric(clustered["cluster_id"], errors="coerce").dropna().unique())
+    cluster_order = [f"Cluster {int(cluster_id)}" for cluster_id in cluster_ids]
+    cluster_palette = px.colors.qualitative.Safe + px.colors.qualitative.Set2
+    cluster_color_map = {
+        cluster_name: cluster_palette[idx % len(cluster_palette)]
+        for idx, cluster_name in enumerate(cluster_order)
+    }
+
+    st.caption(
+        "Features are standardized (z-scores) before clustering; "
+        "profile values are cluster mean z-scores."
+    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Rows clustered", f"{len(clustered):,}")
+    c2.metric("Clusters", str(result["k"]))
+    c3.metric("PCA variance (2D)", f"{100.0 * sum(explained_var[:2]):.1f}%")
+
+    if granularity == "day":
+        daily_mix = (
+            clustered.groupby(["date_local", "cluster"], dropna=False)
+            .size()
+            .reset_index(name="count")
+        )
+        totals = daily_mix.groupby("date_local", dropna=False)["count"].transform("sum")
+        daily_mix["pct"] = np.where(totals > 0, 100.0 * daily_mix["count"] / totals, 0.0)
+        fig_timeline = px.bar(
+            daily_mix,
+            x="date_local",
+            y="pct",
+            color="cluster",
+            barmode="stack",
+            color_discrete_map=cluster_color_map,
+            category_orders={"cluster": cluster_order},
+            labels={"date_local": "Date", "pct": "Share of rows (%)"},
+        )
+        fig_timeline.update_layout(height=340, yaxis=dict(range=[0, 100]), bargap=0)
+        _plotly(fig_timeline)
+    else:
+        weekly = clustered.copy()
+        weekly["period_start"] = weekly["date_local"].dt.to_period("W").dt.start_time
+        weekly_mix = (
+            weekly.groupby(["period_start", "cluster"], dropna=False)
+            .size()
+            .reset_index(name="count")
+        )
+        totals = weekly_mix.groupby("period_start", dropna=False)["count"].transform("sum")
+        weekly_mix["pct"] = np.where(totals > 0, 100.0 * weekly_mix["count"] / totals, 0.0)
+        fig_weekly = px.bar(
+            weekly_mix,
+            x="period_start",
+            y="pct",
+            color="cluster",
+            color_discrete_map=cluster_color_map,
+            category_orders={"cluster": cluster_order},
+            barmode="stack",
+            labels={"period_start": "Week", "pct": "Share of days (%)"},
+        )
+        fig_weekly.update_layout(height=340, yaxis=dict(range=[0, 100]))
+        _plotly(fig_weekly)
+
+    fig_pca = px.scatter(
+        clustered,
+        x="pc1",
+        y="pc2",
+        color="cluster",
+        color_discrete_map=cluster_color_map,
+        category_orders={"cluster": cluster_order},
+        hover_data={"date_local": True, "cluster_id": True},
+        labels={"pc1": "PC1", "pc2": "PC2"},
+    )
+    fig_pca.update_layout(height=360)
+    _plotly(fig_pca)
+
+    profile_long = profile.melt(id_vars="cluster", var_name="feature", value_name="z_score")
+    fig_profile = px.bar(
+        profile_long,
+        x="feature",
+        y="z_score",
+        color="cluster",
+        color_discrete_map=cluster_color_map,
+        category_orders={"cluster": cluster_order},
+        barmode="group",
+        labels={"feature": "Feature", "z_score": "Mean z-score"},
+    )
+    fig_profile.add_hline(y=0, line_dash="dash", line_color="#cbd5e1")
+    fig_profile.update_layout(height=360)
+    _plotly(fig_profile)
+
+
+def _dynamic_bayes_example_tab(df: pd.DataFrame, metrics: list[str]) -> None:
+    st.subheader("Dynamic Bayes (example)")
+    st.caption(
+        "Rolling-window Bayesian regression example: coefficients are re-estimated over time "
+        "to show changing relationships."
+    )
+
+    if df.empty or len(metrics) < 2:
+        st.info("Need at least two numeric metrics.")
+        return
+
+    target_default = (
+        metrics.index("anxiety_status_score") if "anxiety_status_score" in metrics else 0
+    )
+    target = st.selectbox(
+        "Target",
+        options=metrics,
+        index=target_default,
+        key="dynamic_bayes_target",
+    )
+
+    predictor_options = [m for m in metrics if m != target]
+    defaults = [
+        m for m in ["sleep_total_hours", "steps", "readiness_score"] if m in predictor_options
+    ]
+    predictors = st.multiselect(
+        "Predictors",
+        options=predictor_options,
+        default=defaults,
+        key="dynamic_bayes_predictors",
+    )
+
+    c1, c2 = st.columns(2)
+    window = c1.slider("Rolling window (days)", min_value=21, max_value=120, value=45, step=3)
+    min_rows = c2.slider("Minimum rows per fit", min_value=15, max_value=80, value=25, step=1)
+
+    run = st.button("Run dynamic example", key="dynamic_bayes_run")
+    if not run:
+        st.caption("Select variables and click `Run dynamic example`.")
+        return
+
+    if len(predictors) == 0:
+        st.warning("Pick at least one predictor.")
+        return
+
+    try:
+        from sklearn.linear_model import BayesianRidge
+        from sklearn.preprocessing import StandardScaler
+    except ModuleNotFoundError:
+        st.error("scikit-learn is missing. Run `uv sync`.")
+        return
+
+    work = pd.DataFrame({"date_local": pd.to_datetime(df["date_local"], errors="coerce")})
+    work[target] = pd.to_numeric(df[target], errors="coerce")
+    for pred in predictors:
+        work[pred] = pd.to_numeric(df[pred], errors="coerce")
+    work = work.dropna(subset=["date_local", target, *predictors]).sort_values("date_local")
+    if len(work) < max(min_rows, window):
+        st.info("Not enough complete rows for selected window/minimum settings.")
+        return
+
+    rows: list[dict[str, object]] = []
+    for idx in range(window - 1, len(work)):
+        slice_df = work.iloc[idx - window + 1 : idx + 1].copy()
+        if len(slice_df) < min_rows:
+            continue
+
+        x = slice_df[predictors].to_numpy(dtype=float)
+        y = slice_df[target].to_numpy(dtype=float)
+
+        scaler = StandardScaler()
+        x_scaled = scaler.fit_transform(x)
+
+        model = BayesianRidge()
+        model.fit(x_scaled, y)
+
+        date_point = slice_df.iloc[-1]["date_local"]
+        for pred_idx, pred in enumerate(predictors):
+            rows.append(
+                {
+                    "date_local": date_point,
+                    "term": pred,
+                    "coef": float(model.coef_[pred_idx]),
+                }
+            )
+
+    coef_df = pd.DataFrame(rows)
+    if coef_df.empty:
+        st.info("No rolling fits were produced.")
+        return
+
+    fig_coef = px.line(
+        coef_df,
+        x="date_local",
+        y="coef",
+        color="term",
+        labels={"date_local": "Date", "coef": "Coefficient", "term": "Predictor"},
+    )
+    fig_coef.add_hline(y=0, line_dash="dash", line_color="#cbd5e1")
+    fig_coef.update_layout(height=400)
+    _plotly(fig_coef)
+
+    latest = (
+        coef_df.sort_values("date_local")
+        .groupby("term", as_index=False)
+        .tail(1)
+        .sort_values("coef", key=lambda s: s.abs(), ascending=False)
+    )
+    st.markdown("#### Latest coefficients")
+    st.dataframe(latest[["term", "coef", "date_local"]], use_container_width=True, hide_index=True)
+
+
 def _sync_and_source_stats_tab(db_path: Path, settings, runtime) -> None:
     st.subheader("Sync + source statistics")
     st.caption("Refresh Notion/Oura data and inspect descriptive stats for source tables.")
@@ -1887,6 +2243,8 @@ def main() -> None:
             "Explore",
             "Trends",
             "Correlations & Lags",
+            "Feature Clusters",
+            "Dynamic Bayes Example",
             "Bayes Regression",
             "Leaderboard",
             "Period Summary",
@@ -1912,14 +2270,18 @@ def main() -> None:
     with tabs[7]:
         _corr_tab(df, metrics)
     with tabs[8]:
-        _bayes_regression_tab(df, metrics)
+        _feature_clusters_tab(df, metrics)
     with tabs[9]:
-        _leaderboard_tab(df)
+        _dynamic_bayes_example_tab(df, metrics)
     with tabs[10]:
-        _period_summary_tab(df, metrics)
+        _bayes_regression_tab(df, metrics)
     with tabs[11]:
-        _quality_tab(df, metrics)
+        _leaderboard_tab(df)
     with tabs[12]:
+        _period_summary_tab(df, metrics)
+    with tabs[13]:
+        _quality_tab(df, metrics)
+    with tabs[14]:
         _sync_and_source_stats_tab(Path(db_path_str), settings, runtime)
 
 

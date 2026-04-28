@@ -91,7 +91,7 @@ ANXIETY_STATUS_COLORS = {
 
 
 def _conn(db_path: Path) -> duckdb.DuckDBPyConnection:
-    return duckdb.connect(str(db_path), read_only=True)
+    return duckdb.connect(str(db_path))
 
 
 def load_daily_frame(db_path: Path) -> pd.DataFrame:
@@ -348,7 +348,12 @@ def build_leaderboard(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["metric_label", "record_type"]).reset_index(drop=True)
 
 
-def build_goals_progress(df: pd.DataFrame, period: str, goals: dict[str, float]) -> pd.DataFrame:
+def build_goals_progress(
+    df: pd.DataFrame,
+    period: str,
+    goals: dict[str, float],
+    ref_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
     columns = [
         "period_start",
         "period_end",
@@ -367,7 +372,10 @@ def build_goals_progress(df: pd.DataFrame, period: str, goals: dict[str, float])
     if period not in {"week", "month"} or df.empty or "date_local" not in df.columns:
         return pd.DataFrame(columns=columns)
 
-    today = pd.Timestamp.now().normalize()
+    if ref_date is not None:
+        today = pd.Timestamp(ref_date).normalize()
+    else:
+        today = pd.Timestamp.now().normalize()
     if period == "week":
         period_start = today - pd.Timedelta(days=today.weekday())
         period_end = period_start + pd.Timedelta(days=6)
