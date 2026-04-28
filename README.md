@@ -43,6 +43,9 @@ OAuth setup guide:
 Pipeline runbook:
 
 - `docs/pipeline_runbook.md`
+- `docs/etl_architecture.md`
+- `docs/pipeline_extensions.md`
+- `docs/master_learning_guide.md`
 
 5. Tune runtime pipeline config in `config/pipeline.toml`:
 

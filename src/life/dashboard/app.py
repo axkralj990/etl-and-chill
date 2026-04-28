@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 
 from life.config import load_settings
 from life.connectors.notion import NotionConnector
+from life.connectors.oura import OuraConnector
 from life.dashboard.data import (
     ANXIETY_STATUS_COLORS,
     aggregate_period,
@@ -26,8 +27,9 @@ from life.dashboard.data import (
 )
 from life.enums import SourceName
 from life.inference.cmdstan_adapter import CmdStanInferenceAdapter
+from life.oauth import OuraOAuthClient, OuraTokenStore
 from life.pipeline.runtime_config import load_runtime_config
-from life.pipeline.shared import finalize_features, run_notion_sync
+from life.pipeline.shared import finalize_features, run_notion_sync, run_oura_sync
 from life.storage.duckdb import DuckDBStorage
 
 THEME_PRESETS: dict[str, dict[str, str]] = {
@@ -302,6 +304,63 @@ def _trends_tab(df: pd.DataFrame, metrics: list[str]) -> None:
     )
     _plotly(fig)
 
+    st.markdown("#### Correlation summary")
+    lag_scan_days = 5
+
+    corr_df = pd.DataFrame(
+        {
+            "x": pd.to_numeric(plot_df[x_metric], errors="coerce"),
+            "y": pd.to_numeric(plot_df[y_metric], errors="coerce"),
+        }
+    )
+    corr_df = corr_df.dropna(subset=["x", "y"])
+    if len(corr_df) < 3:
+        st.info("Not enough overlapping points to compute correlations.")
+        return
+
+    same_time_corr = float(corr_df["x"].corr(corr_df["y"]))
+
+    lag_rows: list[dict[str, float | int]] = []
+    for lag in range(-lag_scan_days, lag_scan_days + 1):
+        shifted = pd.DataFrame({"x_shifted": corr_df["x"].shift(lag), "y": corr_df["y"]}).dropna()
+        if len(shifted) < 3:
+            continue
+        lag_rows.append(
+            {
+                "lag_days": lag,
+                "corr": float(shifted["x_shifted"].corr(shifted["y"])),
+                "n": len(shifted),
+            }
+        )
+
+    if not lag_rows:
+        st.info("Lagged correlation could not be computed for selected metrics.")
+        return
+
+    lag_corr = pd.DataFrame(lag_rows)
+    lag_corr["abs_corr"] = lag_corr["corr"].abs()
+    best = lag_corr.sort_values("abs_corr", ascending=False).iloc[0]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Corr (lag 0)", f"{same_time_corr:.3f}")
+    c2.metric("Best lag", f"{int(best['lag_days'])}d")
+    c3.metric("Best |corr|", f"{float(best['corr']):.3f}")
+
+    fig_lag = px.bar(
+        lag_corr.sort_values("lag_days"),
+        x="lag_days",
+        y="corr",
+        color="corr",
+        color_continuous_scale="RdBu",
+        range_color=[-1, 1],
+        labels={"lag_days": "Lag (days)", "corr": "Correlation"},
+        hover_data={"n": True, "corr": ":.3f", "abs_corr": ":.3f"},
+    )
+    fig_lag.add_hline(y=0, line_dash="dash", line_color="#cbd5e1")
+    fig_lag.add_vline(x=0, line_dash="dash", line_color="#cbd5e1")
+    fig_lag.update_layout(height=300, coloraxis_showscale=False)
+    _plotly(fig_lag)
+
 
 def _period_summary_tab(df: pd.DataFrame, metrics: list[str]) -> None:
     st.subheader("Week / month / year summaries")
@@ -354,16 +413,52 @@ def _corr_tab(df: pd.DataFrame, metrics: list[str]) -> None:
         _plotly(fig)
 
     st.markdown("#### Lag explorer")
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     x = c1.selectbox("X metric", options=metrics, index=0)
     y = c2.selectbox("Y metric", options=metrics, index=1 if len(metrics) > 1 else 0)
-    lag = c3.slider("Lag days", min_value=-14, max_value=14, value=1)
-    lagged = df[["date_local", x, y]].copy()
-    lagged["x_lagged"] = lagged[x].shift(lag)
-    scatter_df = lagged.dropna(subset=["x_lagged", y])
+    st.caption(
+        "Lag direction: positive lag uses past values (t-lag); negative lag uses future values."
+    )
 
-    fig = px.scatter(scatter_df, x="x_lagged", y=y, hover_data=["date_local"])
-    fig.update_layout(height=460, xaxis_title=f"{x} lagged by {lag}d")
+    l1, l2 = st.columns(2)
+    x_lag = int(
+        l1.number_input(
+            "X lag (days)",
+            min_value=-14,
+            max_value=14,
+            value=1,
+            step=1,
+            key="explore_x_lag",
+        )
+    )
+    y_lag = int(
+        l2.number_input(
+            "Y lag (days)",
+            min_value=-14,
+            max_value=14,
+            value=0,
+            step=1,
+            key="explore_y_lag",
+        )
+    )
+
+    lagged = pd.DataFrame(
+        {
+            "date_local": df["date_local"],
+            "x_base": pd.to_numeric(df[x], errors="coerce"),
+            "y_base": pd.to_numeric(df[y], errors="coerce"),
+        }
+    )
+    lagged["x_lagged"] = lagged["x_base"].shift(x_lag)
+    lagged["y_lagged"] = lagged["y_base"].shift(y_lag)
+    scatter_df = lagged.dropna(subset=["x_lagged", "y_lagged"])
+
+    fig = px.scatter(scatter_df, x="x_lagged", y="y_lagged", hover_data=["date_local"])
+    fig.update_layout(
+        height=460,
+        xaxis_title=f"{x} (lag {x_lag}d)",
+        yaxis_title=f"{y} (lag {y_lag}d)",
+    )
     _plotly(fig)
 
 
@@ -402,7 +497,24 @@ def _sleep_tab(df: pd.DataFrame) -> None:
         stage_df = recent[["date_local", *stage_cols]].melt(
             id_vars="date_local", value_vars=stage_cols, var_name="stage", value_name="hours"
         )
-        fig = px.bar(stage_df, x="date_local", y="hours", color="stage")
+        stage_labels = {
+            "sleep_deep_hours": "Deep",
+            "sleep_rem_hours": "REM",
+            "sleep_light_hours": "Light",
+        }
+        stage_df["stage"] = stage_df["stage"].map(stage_labels).fillna(stage_df["stage"])
+        fig = px.bar(
+            stage_df,
+            x="date_local",
+            y="hours",
+            color="stage",
+            category_orders={"stage": ["Deep", "REM", "Light"]},
+            color_discrete_map={
+                "Deep": "#0b3d91",
+                "REM": "#4ea8de",
+                "Light": "#9bd0ff",
+            },
+        )
         fig.update_layout(height=430)
         _plotly(fig)
 
@@ -524,28 +636,16 @@ def _leaderboard_tab(df: pd.DataFrame) -> None:
 
     display = leaderboard.copy()
     display["date_local"] = display["date_local"].dt.date
+    display["general_notes"] = display["general_notes"].fillna("").astype(str).str.strip()
+    display.loc[display["general_notes"] == "", "general_notes"] = "(empty)"
     st.dataframe(
-        display[["metric_label", "record_label", "value_display", "date_local"]].rename(
-            columns={"value_display": "value"}
-        ),
+        display[
+            ["metric_label", "record_label", "value_display", "date_local", "general_notes"]
+        ].rename(columns={"value_display": "value", "general_notes": "General Notes"}),
         use_container_width=True,
+        height=560,
         hide_index=True,
     )
-
-    st.markdown("#### Record details")
-    choices = [
-        f"{row.metric_label} - {row.record_label} ({row.date_local.date()})"
-        for row in leaderboard.itertuples()
-    ]
-    selected_label = st.selectbox("Pick a record", choices)
-    selected = leaderboard.iloc[choices.index(selected_label)]
-
-    st.write(f"Date: {selected['date_local'].date()}")
-    notes = selected.get("general_notes")
-    if isinstance(notes, str) and notes.strip():
-        st.write(f"General Notes: {notes.strip()}")
-    else:
-        st.write("General Notes: (empty)")
 
 
 def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
@@ -894,9 +994,7 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
             lambda row: format_metric_value(float(row["goal"]), row["metric"]), axis=1
         )
         latest_frame["delta_display"] = latest_frame["delta_pct"].map(lambda v: f"{v:+.1f}%")
-        latest_frame["track"] = latest_frame["on_track"].map(
-            lambda ok: "On track" if ok else "Off track"
-        )
+        latest_frame["track"] = latest_frame["on_track"].map(lambda ok: "✅" if ok else "❌")
         st.markdown("#### Current period snapshot")
         st.dataframe(
             latest_frame[
@@ -1107,25 +1205,7 @@ def _workouts_tab(df: pd.DataFrame) -> None:
     )
     type_order = global_type_counts["workout_type"].tolist()
 
-    donut_year_options = ["All years", *sorted(expanded_df["date_local"].dt.year.unique().tolist())]
-    donut_year = st.selectbox(
-        "Donut year",
-        options=donut_year_options,
-        index=0,
-        key="workouts_donut_year",
-    )
-
     st.markdown("#### Workout type mix")
-    donut_df = expanded_df.copy()
-    if donut_year != "All years":
-        donut_df = donut_df[donut_df["date_local"].dt.year == int(donut_year)]
-
-    type_counts = (
-        donut_df["workout_type"]
-        .value_counts()
-        .rename_axis("workout_type")
-        .reset_index(name="count")
-    )
     preferred_colors = {
         "swimming": "#4ea8de",
         "bjj": "#d1495b",
@@ -1189,39 +1269,41 @@ def _workouts_tab(df: pd.DataFrame) -> None:
     fig_volume.update_layout(height=320)
     _plotly(fig_volume)
 
-    if type_counts.empty:
-        st.info("No workouts available for selected donut year.")
+    donut_years = sorted(expanded_df["date_local"].dt.year.dropna().astype(int).unique().tolist())
+    years_to_show = donut_years[-5:]
+    if not years_to_show:
+        st.info("No workouts available for yearly donut charts.")
     else:
-        fig_types = px.pie(
-            type_counts,
-            names="workout_type",
-            values="count",
-            hole=0.4,
-            color="workout_type",
-            color_discrete_map=color_map,
-            category_orders={"workout_type": type_order},
-        )
-        fig_types.update_layout(height=360)
-        _plotly(fig_types)
+        donut_cols = st.columns(len(years_to_show))
+        for idx, year in enumerate(years_to_show):
+            year_counts = (
+                expanded_df[expanded_df["date_local"].dt.year == year]["workout_type"]
+                .value_counts()
+                .rename_axis("workout_type")
+                .reset_index(name="count")
+            )
+            if year_counts.empty:
+                with donut_cols[idx]:
+                    st.info(f"{year}: no data")
+                continue
 
-    st.markdown("#### Distance / elements trends")
-    elements_df = expanded_df.dropna(subset=["elements"]).copy()
-    if not elements_df.empty:
-        elements_df["elements"] = pd.to_numeric(elements_df["elements"], errors="coerce")
-        elements_df = elements_df.dropna(subset=["elements"])
-        if not elements_df.empty:
-            fig_elements = px.scatter(
-                elements_df,
-                x="date_local",
-                y="elements",
+            fig_types = px.pie(
+                year_counts,
+                names="workout_type",
+                values="count",
+                hole=0.4,
                 color="workout_type",
                 color_discrete_map=color_map,
                 category_orders={"workout_type": type_order},
-                hover_data=["workout_name"],
-                labels={"elements": "Elements"},
+                title=str(year),
             )
-            fig_elements.update_layout(height=360)
-            _plotly(fig_elements)
+            fig_types.update_layout(
+                height=320,
+                margin=dict(l=8, r=8, t=40, b=8),
+                showlegend=False,
+            )
+            with donut_cols[idx]:
+                _plotly(fig_types)
 
     st.markdown("#### Workout log")
     log = expanded_df.sort_values("date_local", ascending=False).copy()
@@ -1540,14 +1622,17 @@ def _bayes_regression_tab(df: pd.DataFrame, metrics: list[str]) -> None:
 
 def _sync_and_source_stats_tab(db_path: Path, settings, runtime) -> None:
     st.subheader("Sync + source statistics")
-    st.caption("Refresh Notion data and inspect descriptive stats for Notion and Oura tables.")
+    st.caption("Refresh Notion/Oura data and inspect descriptive stats for source tables.")
 
     refresh_message = st.session_state.pop("sync_refresh_message", None)
     if isinstance(refresh_message, str) and refresh_message:
         st.success(refresh_message)
 
-    run_refresh = st.button("Refresh from Notion", key="refresh_notion_button")
-    if run_refresh:
+    action_cols = st.columns(2)
+    run_refresh_notion = action_cols[0].button("Refresh from Notion", key="refresh_notion_button")
+    run_refresh_oura = action_cols[1].button("Refresh from Oura", key="refresh_oura_button")
+
+    if run_refresh_notion:
         if not settings.notion_token or not settings.notion_database_id:
             st.error("Missing NOTION_TOKEN or NOTION_DATABASE_ID in environment.")
         else:
@@ -1579,6 +1664,91 @@ def _sync_and_source_stats_tab(db_path: Path, settings, runtime) -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Notion refresh failed: {exc}")
+            finally:
+                if storage is not None:
+                    storage.conn.close()
+
+    if run_refresh_oura:
+        token_store = OuraTokenStore(settings.oura_token_store_path)
+        access_token = settings.oura_access_token or token_store.get_access_token()
+
+        if (
+            not access_token
+            and settings.oura_auto_refresh
+            and (settings.oura_refresh_token or token_store.get_refresh_token())
+            and settings.oura_client_id
+            and settings.oura_client_secret
+            and settings.oura_redirect_uri
+        ):
+            try:
+                oauth = OuraOAuthClient(
+                    authorize_url=settings.oura_oauth_authorize_url,
+                    token_url=settings.oura_oauth_token_url,
+                    revoke_url=settings.oura_oauth_revoke_url,
+                    client_id=settings.oura_client_id,
+                    client_secret=settings.oura_client_secret,
+                    redirect_uri=settings.oura_redirect_uri,
+                    scope=settings.oura_scopes,
+                )
+                refresh_token = settings.oura_refresh_token or token_store.get_refresh_token()
+                if refresh_token:
+                    token_data = oauth.refresh_token(refresh_token)
+                    access_token = token_data.get("access_token")
+                    if access_token:
+                        token_store.set_tokens(
+                            access_token=access_token,
+                            refresh_token=token_data.get("refresh_token"),
+                            expires_in=token_data.get("expires_in"),
+                            token_type=token_data.get("token_type"),
+                            scope=token_data.get("scope"),
+                        )
+            except Exception as exc:
+                st.error(f"Oura token refresh failed: {exc}")
+                access_token = None
+
+        if not access_token:
+            st.error(
+                "Missing Oura access token. Set OURA_ACCESS_TOKEN, or configure token store/oauth "
+                "refresh vars like CLI sync."
+            )
+        else:
+            storage = None
+            try:
+                storage = DuckDBStorage(db_path)
+                oura_connector = OuraConnector(access_token, settings.oura_base_url)
+                today = date.today()
+                lookback_days = runtime.incremental.lookback_days
+                fallback_days = runtime.incremental.fallback_days
+
+                oura_max_candidates: list[date] = []
+                for endpoint in runtime.oura.endpoints:
+                    current = storage.get_sync_state(SourceName.OURA.value, endpoint.value)
+                    if current:
+                        oura_max_candidates.append(current)
+                max_oura = max(oura_max_candidates) if oura_max_candidates else None
+                oura_start = (
+                    max_oura - timedelta(days=lookback_days)
+                    if max_oura
+                    else (today - timedelta(days=fallback_days))
+                )
+
+                with st.spinner("Syncing Oura and rebuilding daily features..."):
+                    oura_count = run_oura_sync(
+                        storage,
+                        oura_connector,
+                        oura_start,
+                        today,
+                        runtime.oura.endpoints,
+                    )
+                    finalize_features(storage)
+
+                st.session_state["sync_refresh_message"] = (
+                    "Oura refresh complete. "
+                    f"Rows synced: {oura_count}. Window: {oura_start} to {today}."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Oura refresh failed: {exc}")
             finally:
                 if storage is not None:
                     storage.conn.close()
