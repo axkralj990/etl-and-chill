@@ -22,5 +22,5 @@ steps_per_day = 7500
 sleep_hours_per_day = 7.0
 strength_elements_per_week = 300
 strength_elements_per_month = 1000
-mindful_minutes_per_week = 50
-mindful_minutes_per_month = 200
+cardio_events_per_week = 3
+cardio_events_per_month = 10

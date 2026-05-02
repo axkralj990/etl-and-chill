@@ -78,7 +78,7 @@ METRIC_UNITS = {
     "sleep_score": "pts",
     "daytime_stress_avg": "score",
     "strength_elements": "elements",
-    "mindful_min": "min",
+    "cardio_events": "events",
 }
 
 ANXIETY_STATUS_COLORS = {
@@ -478,34 +478,79 @@ def build_goals_progress(
             }
         )
 
-    mindful_goal_key = (
-        "mindful_minutes_per_week" if period == "week" else "mindful_minutes_per_month"
-    )
-    mindful_goal_value = goals.get(mindful_goal_key)
-    if (
-        isinstance(mindful_goal_value, int | float)
-        and float(mindful_goal_value) > 0
-        and "mindful_min" in frame.columns
-    ):
-        mindful_series = pd.to_numeric(frame["mindful_min"], errors="coerce").dropna()
-        total_mindful = float(mindful_series.sum()) if not mindful_series.empty else 0.0
-        mindful_goal = float(mindful_goal_value)
-        mindful_delta = total_mindful - mindful_goal
+    cardio_goal_key = "cardio_events_per_week" if period == "week" else "cardio_events_per_month"
+    cardio_goal_value = goals.get(cardio_goal_key)
+    if isinstance(cardio_goal_value, int | float) and float(cardio_goal_value) > 0:
+        total_cardio_events = 0.0
+        cardio_days = 0
+        if "workout_elements_json" in frame.columns:
+            for raw in frame["workout_elements_json"].dropna():
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(parsed, list):
+                    continue
+
+                day_events = 0.0
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    workout_type = item.get("type")
+                    elements = item.get("elements")
+                    value = elements.get("elements") if isinstance(elements, dict) else None
+                    if not isinstance(value, int | float):
+                        continue
+
+                    if workout_type == "running":
+                        if value > 30:
+                            day_events += 4.0
+                        elif value > 20:
+                            day_events += 3.0
+                        elif value > 10:
+                            day_events += 2.0
+                        else:
+                            day_events += 1.0
+                    elif workout_type == "cycling":
+                        if value > 80:
+                            day_events += 4.0
+                        elif value > 60:
+                            day_events += 3.0
+                        elif value > 30:
+                            day_events += 2.0
+                        else:
+                            day_events += 1.0
+                    elif workout_type == "swimming":
+                        if value > 4:
+                            day_events += 3.0
+                        elif value > 2:
+                            day_events += 2.0
+                        else:
+                            day_events += 1.0
+
+                if day_events > 0:
+                    cardio_days += 1
+                    total_cardio_events += day_events
+
+        cardio_goal = float(cardio_goal_value)
+        cardio_delta = total_cardio_events - cardio_goal
         rows.append(
             {
                 "period_start": period_start,
                 "period_end": period_end,
                 "period_label": period_label,
-                "metric": "mindful_min",
-                "metric_label": "Mindful minutes",
+                "metric": "cardio_events",
+                "metric_label": "Cardio events",
                 "direction": "higher",
-                "goal": mindful_goal,
-                "avg_value": total_mindful,
-                "delta": mindful_delta,
-                "delta_pct": 100.0 * mindful_delta / mindful_goal,
-                "on_track": mindful_delta >= 0,
-                "days_with_data": int(mindful_series.shape[0]),
-                "unit": "min",
+                "goal": cardio_goal,
+                "avg_value": total_cardio_events,
+                "delta": cardio_delta,
+                "delta_pct": 100.0 * cardio_delta / cardio_goal,
+                "on_track": cardio_delta >= 0,
+                "days_with_data": cardio_days,
+                "unit": "events",
             }
         )
 

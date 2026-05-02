@@ -985,52 +985,111 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
                 _plotly(fig_workouts)
 
         with chart_cols[3]:
-            mindful_row = progress[progress["metric"] == "mindful_min"]
-            if mindful_row.empty:
-                st.info("Mindful goal not configured.")
+            cardio_row = progress[progress["metric"] == "cardio_events"]
+            if cardio_row.empty:
+                st.info("Cardio events goal not configured.")
             else:
-                mindful_target_total = float(mindful_row.iloc[0]["goal"])
-                mindful_daily = (
-                    period_df.groupby("date_local", dropna=False)["mindful_min"]
-                    .sum()
-                    .reindex(period_dates)
-                    if "mindful_min" in period_df.columns
-                    else pd.Series(index=period_dates, dtype=float)
-                )
-                mindful_daily = pd.to_numeric(mindful_daily, errors="coerce").fillna(0.0)
-                mindful_actual = mindful_daily.cumsum()
-                mindful_actual[mindful_actual.index > today_cap] = np.nan
+                cardio_target_total = float(cardio_row.iloc[0]["goal"])
+                cardio_daily_events = pd.Series(index=period_dates, dtype=float)
+                if "workout_elements_json" in period_df.columns:
+                    cardio_rows: list[dict[str, object]] = []
+                    for row in period_df.itertuples():
+                        raw_json = getattr(row, "workout_elements_json", None)
+                        if not isinstance(raw_json, str) or not raw_json.strip():
+                            continue
+                        try:
+                            parsed = json.loads(raw_json)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(parsed, list):
+                            continue
 
-                fig_mindful = go.Figure()
-                fig_mindful.add_trace(
+                        day_events = 0.0
+                        for item in parsed:
+                            if not isinstance(item, dict):
+                                continue
+                            workout_type = item.get("type")
+                            elements = item.get("elements")
+                            value = elements.get("elements") if isinstance(elements, dict) else None
+                            if not isinstance(value, int | float):
+                                continue
+
+                            if workout_type == "running":
+                                if value > 30:
+                                    day_events += 4.0
+                                elif value > 20:
+                                    day_events += 3.0
+                                elif value > 10:
+                                    day_events += 2.0
+                                else:
+                                    day_events += 1.0
+                            elif workout_type == "cycling":
+                                if value > 80:
+                                    day_events += 4.0
+                                elif value > 60:
+                                    day_events += 3.0
+                                elif value > 30:
+                                    day_events += 2.0
+                                else:
+                                    day_events += 1.0
+                            elif workout_type == "swimming":
+                                if value > 4:
+                                    day_events += 3.0
+                                elif value > 2:
+                                    day_events += 2.0
+                                else:
+                                    day_events += 1.0
+
+                        cardio_rows.append({"date_local": row.date_local, "events": day_events})
+
+                    if cardio_rows:
+                        cardio_df = pd.DataFrame(cardio_rows)
+                        cardio_df["date_local"] = pd.to_datetime(
+                            cardio_df["date_local"], errors="coerce"
+                        )
+                        cardio_df["events"] = pd.to_numeric(cardio_df["events"], errors="coerce")
+                        cardio_df = cardio_df.dropna(subset=["date_local", "events"])
+                        cardio_daily_events = (
+                            cardio_df.groupby("date_local", dropna=False)["events"]
+                            .sum()
+                            .reindex(period_dates)
+                        )
+
+                cardio_daily_events = pd.to_numeric(cardio_daily_events, errors="coerce")
+                cardio_daily_events = cardio_daily_events.fillna(0.0)
+                cardio_actual = cardio_daily_events.cumsum()
+                cardio_actual[cardio_actual.index > today_cap] = np.nan
+
+                fig_cardio = go.Figure()
+                fig_cardio.add_trace(
                     go.Scatter(
                         x=period_dates,
-                        y=_on_course_line(mindful_target_total),
+                        y=_on_course_line(cardio_target_total),
                         mode="lines",
                         line=dict(color="#f4d35e", width=2, dash="dash"),
                         name="On-course",
                     )
                 )
-                fig_mindful.add_trace(
+                fig_cardio.add_trace(
                     go.Scatter(
                         x=period_dates,
-                        y=mindful_actual,
+                        y=cardio_actual,
                         mode="lines+markers",
                         line=dict(color="#2a9d8f", width=3),
                         marker=dict(size=5),
                         name="Actual",
                     )
                 )
-                fig_mindful.update_layout(
-                    title="Mindful",
+                fig_cardio.update_layout(
+                    title="Cardio events",
                     height=320,
                     xaxis_title=f"Time in {period}",
-                    yaxis_title="Cumulative mindful minutes",
-                    yaxis=dict(range=[0, mindful_target_total]),
+                    yaxis_title="Cumulative cardio events",
+                    yaxis=dict(range=[0, cardio_target_total]),
                     margin=dict(l=8, r=8, t=40, b=8),
                     showlegend=False,
                 )
-                _plotly(fig_mindful)
+                _plotly(fig_cardio)
 
         strength_rows = progress[progress["metric"] == "strength_elements"]
         if not strength_rows.empty:
@@ -1160,6 +1219,23 @@ def _anxiety_stress_tab(df: pd.DataFrame) -> None:
         height=560,
     )
     _plotly(fig_status)
+
+    st.markdown("#### Average anxiety over time")
+    anxiety_avg = (
+        date_source.groupby("period_start", dropna=False)["status"]
+        .mean()
+        .reset_index(name="avg_anxiety")
+    )
+    anxiety_avg = anxiety_avg.sort_values("period_start")
+    fig_avg = px.line(
+        anxiety_avg,
+        x="period_start",
+        y="avg_anxiety",
+        markers=True,
+        labels={"period_start": period_label, "avg_anxiety": "Average anxiety"},
+    )
+    fig_avg.update_layout(height=320, yaxis=dict(range=[1, 5]))
+    _plotly(fig_avg)
 
     st.markdown("#### General notes by date")
     notes_df = pd.DataFrame(

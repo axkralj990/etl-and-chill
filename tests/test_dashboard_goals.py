@@ -29,7 +29,11 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
                 '[{"name":"Strength - 120","type":"strength","elements":{"elements":120}}]',
                 '[{"name":"Strength - 90","type":"strength","elements":{"elements":90}}]',
                 None,
-                '[{"name":"Running - 10k","type":"running","elements":{"elements":10}}]',
+                (
+                    '[{"name":"Running - 22k","type":"running","elements":{"elements":22}}, '
+                    '{"name":"Cycling - 45k","type":"cycling","elements":{"elements":45}}, '
+                    '{"name":"Swimming - 3k","type":"swimming","elements":{"elements":3}}]'
+                ),
             ],
         }
     )
@@ -38,8 +42,8 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
         "sleep_hours_per_day": 7.0,
         "strength_elements_per_week": 300.0,
         "strength_elements_per_month": 1000.0,
-        "mindful_minutes_per_week": 50.0,
-        "mindful_minutes_per_month": 200.0,
+        "cardio_events_per_week": 3.0,
+        "cardio_events_per_month": 10.0,
     }
 
     out = build_goals_progress(frame, period="week", goals=goals)
@@ -48,7 +52,7 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
         "steps",
         "sleep_total_hours",
         "strength_elements",
-        "mindful_min",
+        "cardio_events",
     }
 
     steps_row = out[out["metric"] == "steps"].iloc[0]
@@ -66,10 +70,10 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
     assert strength_row["goal"] == 300.0
     assert strength_row["delta"] == -90.0
 
-    mindful_row = out[out["metric"] == "mindful_min"].iloc[0]
-    assert mindful_row["avg_value"] == 40.0
-    assert mindful_row["goal"] == 50.0
-    assert mindful_row["delta"] == -10.0
+    cardio_row = out[out["metric"] == "cardio_events"].iloc[0]
+    assert cardio_row["avg_value"] == 7.0
+    assert cardio_row["goal"] == 3.0
+    assert cardio_row["delta"] == 4.0
 
 
 def test_build_anxiety_status_mix_current_month() -> None:
