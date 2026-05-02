@@ -284,7 +284,12 @@ class DuckDBStorage:
             row["source_payloads_json"] = json.dumps(row.pop("source_payloads"), ensure_ascii=True)
             columns = list(row.keys())
             placeholders = ", ".join(["?"] * len(columns))
-            update_clause = ", ".join([f"{c}=excluded.{c}" for c in columns if c != "date_local"])
+            update_parts = [
+                f"{c}=coalesce(excluded.{c}, canonical_oura_daily.{c})"
+                for c in columns
+                if c != "date_local"
+            ]
+            update_clause = ", ".join(update_parts)
             sql = f"""
                 insert into canonical_oura_daily ({", ".join(columns)})
                 values ({placeholders})

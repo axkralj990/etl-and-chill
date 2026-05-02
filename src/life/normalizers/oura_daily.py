@@ -89,10 +89,6 @@ class OuraDailyNormalizer(BaseNormalizer):
                 normalized["sleep_score"] = self._as_int(record.get("score"))
 
             elif endpoint == OuraDailyEndpoint.SLEEP:
-                sleep_type = record.get("type")
-                if sleep_type and sleep_type != "long_sleep":
-                    out.append(normalized)
-                    continue
                 normalized["sleep_time_in_bed"] = self._as_int(record.get("time_in_bed"))
                 normalized["sleep_total_duration"] = self._as_int(
                     record.get("total_sleep_duration")
@@ -185,6 +181,28 @@ def merge_oura_daily_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         payload = row.get("source_payload")
         if endpoint and payload:
             current["source_payloads"][endpoint] = payload
+
+        if endpoint == OuraDailyEndpoint.SLEEP.value:
+            for duration_key in (
+                "sleep_time_in_bed",
+                "sleep_total_duration",
+                "sleep_deep_duration",
+                "sleep_rem_duration",
+                "sleep_light_duration",
+            ):
+                value = row.get(duration_key)
+                if value is not None:
+                    current[duration_key] = (current.get(duration_key) or 0) + value
+
+            for passthrough_key in (
+                "sleep_lowest_hr",
+                "sleep_avg_hr",
+                "sleep_avg_hrv",
+            ):
+                if row.get(passthrough_key) is not None:
+                    current[passthrough_key] = row[passthrough_key]
+
+            continue
 
         for key in (
             "activity_score",

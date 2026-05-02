@@ -66,7 +66,7 @@ def test_sleep_endpoint_maps_hr_hrv_and_durations() -> None:
     assert sleep[0]["sleep_avg_hrv"] == 88.0
 
 
-def test_sleep_endpoint_skips_nap_sleep_type() -> None:
+def test_sleep_endpoint_keeps_short_sleep_type() -> None:
     normalizer = OuraDailyNormalizer()
     sleep = normalizer.normalize(
         [
@@ -83,5 +83,49 @@ def test_sleep_endpoint_skips_nap_sleep_type() -> None:
 
     assert len(sleep) == 1
     assert sleep[0]["endpoint"] == "sleep"
-    assert "sleep_total_duration" not in sleep[0]
-    assert "sleep_time_in_bed" not in sleep[0]
+    assert sleep[0]["sleep_total_duration"] == 1200
+    assert sleep[0]["sleep_time_in_bed"] == 1800
+
+
+def test_merge_sums_sleep_durations_from_multiple_sleep_records() -> None:
+    normalizer = OuraDailyNormalizer()
+    sleep_rows = normalizer.normalize(
+        [
+            {
+                "id": "sleep-main",
+                "day": "2024-01-02",
+                "type": "long_sleep",
+                "time_in_bed": 28000,
+                "total_sleep_duration": 25000,
+                "deep_sleep_duration": 6000,
+                "rem_sleep_duration": 5000,
+                "light_sleep_duration": 14000,
+                "lowest_heart_rate": 42,
+                "average_heart_rate": 51.2,
+                "average_hrv": 88,
+            },
+            {
+                "id": "sleep-short",
+                "day": "2024-01-02",
+                "type": "sleep",
+                "time_in_bed": 1800,
+                "total_sleep_duration": 1200,
+                "deep_sleep_duration": 100,
+                "rem_sleep_duration": 200,
+                "light_sleep_duration": 900,
+            },
+        ],
+        endpoint=OuraDailyEndpoint.SLEEP,
+    )
+    merged = merge_oura_daily_rows(sleep_rows)
+
+    assert len(merged) == 1
+    row = merged[0]
+    assert row["sleep_time_in_bed"] == 29800
+    assert row["sleep_total_duration"] == 26200
+    assert row["sleep_deep_duration"] == 6100
+    assert row["sleep_rem_duration"] == 5200
+    assert row["sleep_light_duration"] == 14900
+    assert row["sleep_lowest_hr"] == 42
+    assert row["sleep_avg_hr"] == 51.2
+    assert row["sleep_avg_hrv"] == 88.0
