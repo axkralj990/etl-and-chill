@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-OPENAPI_PATH = Path(
-    "/Users/aleksijkraljic/.local/share/opencode/tool-output/tool_dc0dfbc65001NJ2PwecsXFn59y"
-)
+OPENAPI_PATH = Path(__file__).parent / "fixtures" / "oura_openapi_contract_snapshot.json"
 
 
 def test_oura_openapi_contract_contains_daily_endpoints() -> None:

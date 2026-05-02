@@ -1,0 +1,47 @@
+{
+  "paths": {
+    "/v2/usercollection/daily_activity": {},
+    "/v2/usercollection/daily_sleep": {},
+    "/v2/usercollection/sleep": {},
+    "/v2/usercollection/daily_spo2": {},
+    "/v2/usercollection/daily_readiness": {},
+    "/v2/usercollection/daily_stress": {},
+    "/v2/usercollection/daily_resilience": {},
+    "/v2/usercollection/daily_cardiovascular_age": {}
+  },
+  "components": {
+    "schemas": {
+      "PublicDailyStress": {
+        "properties": {
+          "day_summary": {},
+          "stress_high": {},
+          "recovery_high": {}
+        }
+      },
+      "PublicDailySpO2": {
+        "properties": {
+          "spo2_percentage": {},
+          "aggregated_values": {
+            "$ref": "#/components/schemas/PublicSpo2AggregatedValues"
+          }
+        }
+      },
+      "PublicSpo2AggregatedValues": {
+        "properties": {
+          "average": {}
+        }
+      },
+      "DailyResilienceModel": {
+        "properties": {
+          "contributors": {},
+          "level": {}
+        }
+      },
+      "PublicDailyCardiovascularAge": {
+        "properties": {
+          "vascular_age": {}
+        }
+      }
+    }
+  }
+}
