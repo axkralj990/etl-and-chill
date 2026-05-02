@@ -156,3 +156,21 @@ def test_yoga_maps_to_other() -> None:
 
     out = NotionDailyNormalizer().normalize([row])
     assert out[0]["workout_type"] == "other"
+
+
+def test_hiking_parses_vertical_meters_vm() -> None:
+    row = {
+        "id": "abc",
+        "properties": {
+            "Name": {"title": [{"plain_text": "Sunday, September 15, 2024"}]},
+            "Date": {"date": {"start": "2024-09-15"}},
+            "Anxiety Status": {"select": {"name": "2"}},
+            "Physical Status": {"select": {"name": "good"}},
+            "Productivity": {"select": {"name": "high"}},
+            "Workout": {"rich_text": [{"plain_text": "Hiking - Triglav 1350vm"}]},
+        },
+    }
+
+    out = NotionDailyNormalizer().normalize([row])
+    assert out[0]["workout_type"] == "hiking"
+    assert '"elements": 1350.0' in (out[0]["workout_elements_json"] or "")

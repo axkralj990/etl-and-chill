@@ -141,10 +141,15 @@ class NotionDailyNormalizer(BaseNormalizer):
     def _workout_elements(cls, name: str, workout_type: str) -> dict[str, Any]:
         elements: dict[str, Any] = {}
 
-        if workout_type in {"running", "cycling", "hiking"}:
+        if workout_type in {"running", "cycling"}:
             km_match = re.search(r"(\d+(?:\.\d+)?)\s*k\b", name, flags=re.IGNORECASE)
             if km_match:
                 elements["elements"] = float(km_match.group(1))
+
+        if workout_type == "hiking":
+            vm_match = re.search(r"(\d+(?:\.\d+)?)\s*vm\b", name, flags=re.IGNORECASE)
+            if vm_match:
+                elements["elements"] = float(vm_match.group(1))
 
         if workout_type == "strength":
             reps_match = re.search(r"-\s*(\d+)\b", name)

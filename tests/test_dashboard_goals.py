@@ -32,7 +32,8 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
                 (
                     '[{"name":"Running - 22k","type":"running","elements":{"elements":22}}, '
                     '{"name":"Cycling - 45k","type":"cycling","elements":{"elements":45}}, '
-                    '{"name":"Swimming - 3k","type":"swimming","elements":{"elements":3}}]'
+                    '{"name":"Swimming - 3k","type":"swimming","elements":{"elements":3}}, '
+                    '{"name":"Hiking - 800vm","type":"hiking","elements":{"elements":800}}]'
                 ),
             ],
         }
@@ -71,9 +72,39 @@ def test_build_goals_progress_weekly_delta_signs() -> None:
     assert strength_row["delta"] == -90.0
 
     cardio_row = out[out["metric"] == "cardio_events"].iloc[0]
-    assert cardio_row["avg_value"] == 7.0
+    assert cardio_row["avg_value"] == 9.0
     assert cardio_row["goal"] == 3.0
-    assert cardio_row["delta"] == 4.0
+    assert cardio_row["delta"] == 6.0
+
+
+def test_build_goals_progress_counts_cardio_without_elements_as_one_event() -> None:
+    today = pd.Timestamp.now().normalize()
+    week_start = today - pd.Timedelta(days=today.weekday())
+    frame = pd.DataFrame(
+        {
+            "date_local": pd.to_datetime([week_start]),
+            "steps": [7000],
+            "sleep_total_hours": [7.0],
+            "workout_elements_json": [
+                (
+                    '[{"name":"Cycling - Ravnica","type":"cycling","elements":{}}, '
+                    '{"name":"Hiking - Tolsti vrh","type":"hiking","elements":{}}]'
+                )
+            ],
+        }
+    )
+    goals = {
+        "steps_per_day": 7500.0,
+        "sleep_hours_per_day": 7.0,
+        "strength_elements_per_week": 300.0,
+        "strength_elements_per_month": 1000.0,
+        "cardio_events_per_week": 3.0,
+        "cardio_events_per_month": 10.0,
+    }
+
+    out = build_goals_progress(frame, period="week", goals=goals)
+    cardio_row = out[out["metric"] == "cardio_events"].iloc[0]
+    assert cardio_row["avg_value"] == 2.0
 
 
 def test_build_anxiety_status_mix_current_month() -> None:

@@ -501,6 +501,16 @@ def build_goals_progress(
                     workout_type = item.get("type")
                     elements = item.get("elements")
                     value = elements.get("elements") if isinstance(elements, dict) else None
+                    is_cardio_type = workout_type in {
+                        "running",
+                        "cycling",
+                        "swimming",
+                        "hiking",
+                    }
+                    if is_cardio_type and not isinstance(value, int | float):
+                        day_events += 1.0
+                        continue
+
                     if not isinstance(value, int | float):
                         continue
 
@@ -526,6 +536,15 @@ def build_goals_progress(
                         if value > 4:
                             day_events += 3.0
                         elif value > 2:
+                            day_events += 2.0
+                        else:
+                            day_events += 1.0
+                    elif workout_type == "hiking":
+                        if value > 2000:
+                            day_events += 4.0
+                        elif value > 1200:
+                            day_events += 3.0
+                        elif value > 700:
                             day_events += 2.0
                         else:
                             day_events += 1.0

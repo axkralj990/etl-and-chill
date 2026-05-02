@@ -1011,6 +1011,15 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
                             workout_type = item.get("type")
                             elements = item.get("elements")
                             value = elements.get("elements") if isinstance(elements, dict) else None
+                            if workout_type in {
+                                "running",
+                                "cycling",
+                                "swimming",
+                                "hiking",
+                            } and not isinstance(value, int | float):
+                                day_events += 1.0
+                                continue
+
                             if not isinstance(value, int | float):
                                 continue
 
@@ -1036,6 +1045,15 @@ def _goals_tab(df: pd.DataFrame, goals_cfg: dict[str, float]) -> None:
                                 if value > 4:
                                     day_events += 3.0
                                 elif value > 2:
+                                    day_events += 2.0
+                                else:
+                                    day_events += 1.0
+                            elif workout_type == "hiking":
+                                if value > 2000:
+                                    day_events += 4.0
+                                elif value > 1200:
+                                    day_events += 3.0
+                                elif value > 700:
                                     day_events += 2.0
                                 else:
                                     day_events += 1.0
@@ -2300,7 +2318,6 @@ def main() -> None:
         db_path_str = st.text_input("DuckDB path", value=str(settings.duckdb_path))
         theme_name = "Deep Ocean"
         st.caption("Theme: Deep Ocean")
-        st.caption("Home is focused on today + last 7 days.")
 
     selected_theme = THEME_PRESETS[theme_name]
     _apply_plotly_theme(theme_name, selected_theme)
@@ -2312,7 +2329,6 @@ def main() -> None:
     tabs = st.tabs(
         [
             "Goals",
-            "Home",
             "Sleep + Recovery",
             "Workouts",
             "Anxiety & Stress",
@@ -2332,32 +2348,30 @@ def main() -> None:
     with tabs[0]:
         _goals_tab(df, goals_cfg)
     with tabs[1]:
-        _home_tab(df, metrics)
-    with tabs[2]:
         _sleep_tab(df)
-    with tabs[3]:
+    with tabs[2]:
         _workouts_tab(df)
-    with tabs[4]:
+    with tabs[3]:
         _anxiety_stress_tab(df)
-    with tabs[5]:
+    with tabs[4]:
         _bubble_tab(df, metrics)
-    with tabs[6]:
+    with tabs[5]:
         _trends_tab(df, metrics)
-    with tabs[7]:
+    with tabs[6]:
         _corr_tab(df, metrics)
-    with tabs[8]:
+    with tabs[7]:
         _feature_clusters_tab(df, metrics)
-    with tabs[9]:
+    with tabs[8]:
         _dynamic_bayes_example_tab(df, metrics)
-    with tabs[10]:
+    with tabs[9]:
         _bayes_regression_tab(df, metrics)
-    with tabs[11]:
+    with tabs[10]:
         _leaderboard_tab(df)
-    with tabs[12]:
+    with tabs[11]:
         _period_summary_tab(df, metrics)
-    with tabs[13]:
+    with tabs[12]:
         _quality_tab(df, metrics)
-    with tabs[14]:
+    with tabs[13]:
         _sync_and_source_stats_tab(Path(db_path_str), settings, runtime)
 
 
