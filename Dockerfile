@@ -2,7 +2,12 @@ FROM python:3.12-slim AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    VENV_PATH=/opt/venv
+    VENV_PATH=/opt/venv \
+    CMDSTAN_DIR=/opt/cmdstan
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential gfortran \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN python -m venv "$VENV_PATH"
 ENV PATH="$VENV_PATH/bin:$PATH"
@@ -12,25 +17,29 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN pip install --upgrade pip setuptools wheel && pip install .
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install ".[inference]" \
+    && python -c "from pathlib import Path; from cmdstanpy import cmdstan_path, install_cmdstan; install_cmdstan(dir='${CMDSTAN_DIR}', progress=False); p=Path(cmdstan_path()); link=Path('${CMDSTAN_DIR}')/'cmdstan'; link.unlink(missing_ok=True); link.symlink_to(p)"
 
 
 FROM python:3.12-slim AS runtime
 
 ENV VENV_PATH=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
+    CMDSTAN=/opt/cmdstan/cmdstan \
     PYTHONUNBUFFERED=1 \
     STREAMLIT_SERVER_PORT=8501 \
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
     TIMEZONE=Europe/Ljubljana
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cron tzdata tini \
+    && apt-get install -y --no-install-recommends cron tzdata tini build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/cmdstan /opt/cmdstan
 COPY src ./src
 COPY config ./config
 COPY .env.example ./.env.example

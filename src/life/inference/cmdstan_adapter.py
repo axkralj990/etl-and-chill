@@ -248,7 +248,17 @@ class CmdStanInferenceAdapter:
                 "Install optional dependency group: `uv sync --extra inference`"
             ) from exc
 
-        model = CmdStanModel(stan_file=str(self.model_path))
+        try:
+            model = CmdStanModel(stan_file=str(self.model_path))
+        except ValueError as exc:
+            message = str(exc)
+            if "No CmdStan installation found" in message:
+                raise RuntimeError(
+                    "CmdStan is not installed. Install it with "
+                    "`python -m cmdstanpy.install_cmdstan` and set `CMDSTAN` "
+                    "to the CmdStan path."
+                ) from exc
+            raise
         fit = model.sample(
             data={"N": int(x.shape[0]), "K": int(x.shape[1]), "X": x, "y": y},
             seed=seed,

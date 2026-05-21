@@ -13,7 +13,7 @@ def test_runtime_config_defaults_when_file_missing(tmp_path: Path) -> None:
     assert cfg.goals.sleep_hours_per_day == 7.0
     assert cfg.goals.strength_elements_per_week == 300
     assert cfg.goals.strength_elements_per_month == 1000
-    assert cfg.goals.cardio_events_per_week == 3
+    assert cfg.goals.cardio_events_per_week == 2
     assert cfg.goals.cardio_events_per_month == 10
     assert "daily_sleep" in [endpoint.value for endpoint in cfg.oura.endpoints]
 
