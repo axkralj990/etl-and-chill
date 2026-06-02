@@ -194,35 +194,34 @@ def _ensure_oura_access_token(settings, oauth_context: OAuthContext | None, logg
         )
         return
 
+    refresh_token = settings.oura_refresh_token or token_store.get_refresh_token()
+    can_refresh = bool(refresh_token) and settings.oura_auto_refresh and oauth_context is not None
+
+    if can_refresh:
+        try:
+            logger.info("refreshing oura access token")
+            token_data = oauth_context.oauth.refresh_token(refresh_token)
+            access = token_data.get("access_token")
+            if access:
+                settings.oura_access_token = access
+                oauth_context.token_store.set_tokens(
+                    access_token=access,
+                    refresh_token=token_data.get("refresh_token"),
+                    expires_in=token_data.get("expires_in"),
+                    token_type=token_data.get("token_type"),
+                    scope=token_data.get("scope"),
+                )
+                return
+        except Exception:
+            logger.warning("oura token refresh failed, falling back to stored token")
+
     persisted_access = token_store.get_access_token()
     if persisted_access:
         settings.oura_access_token = persisted_access
         return
 
-    if not settings.oura_auto_refresh:
-        return
-
-    refresh_token = settings.oura_refresh_token or token_store.get_refresh_token()
-    if not refresh_token:
-        return
-
-    if oauth_context is None:
+    if can_refresh:
         logger.warning("cannot auto refresh oura token", reason="missing oauth client settings")
-        return
-
-    logger.info("refreshing oura access token")
-    token_data = oauth_context.oauth.refresh_token(refresh_token)
-    access = token_data.get("access_token")
-    if not access:
-        raise ValueError("Oura token refresh did not return access_token")
-    settings.oura_access_token = access
-    oauth_context.token_store.set_tokens(
-        access_token=access,
-        refresh_token=token_data.get("refresh_token"),
-        expires_in=token_data.get("expires_in"),
-        token_type=token_data.get("token_type"),
-        scope=token_data.get("scope"),
-    )
 
 
 def _run_oura_oauth_status(settings, oauth_context: OAuthContext | None) -> None:

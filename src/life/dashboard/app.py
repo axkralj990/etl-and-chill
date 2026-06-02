@@ -2123,8 +2123,7 @@ def _sync_and_source_stats_tab(db_path: Path, settings, runtime) -> None:
         access_token = settings.oura_access_token or token_store.get_access_token()
 
         if (
-            not access_token
-            and settings.oura_auto_refresh
+            settings.oura_auto_refresh
             and (settings.oura_refresh_token or token_store.get_refresh_token())
             and settings.oura_client_id
             and settings.oura_client_secret
@@ -2143,8 +2142,9 @@ def _sync_and_source_stats_tab(db_path: Path, settings, runtime) -> None:
                 refresh_token = settings.oura_refresh_token or token_store.get_refresh_token()
                 if refresh_token:
                     token_data = oauth.refresh_token(refresh_token)
-                    access_token = token_data.get("access_token")
-                    if access_token:
+                    refreshed = token_data.get("access_token")
+                    if refreshed:
+                        access_token = refreshed
                         token_store.set_tokens(
                             access_token=access_token,
                             refresh_token=token_data.get("refresh_token"),
@@ -2153,8 +2153,7 @@ def _sync_and_source_stats_tab(db_path: Path, settings, runtime) -> None:
                             scope=token_data.get("scope"),
                         )
             except Exception as exc:
-                st.error(f"Oura token refresh failed: {exc}")
-                access_token = None
+                st.error(f"Oura token refresh failed, falling back to stored token: {exc}")
 
         if not access_token:
             st.error(
