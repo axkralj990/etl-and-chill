@@ -183,16 +183,7 @@ def _run_oura_oauth_command(args, context: OAuthContext) -> None:
 
 def _ensure_oura_access_token(settings, oauth_context: OAuthContext | None, logger) -> None:
     token_store = OuraTokenStore(settings.oura_token_store_path)
-
-    if settings.oura_access_token:
-        token_store.set_tokens(
-            access_token=settings.oura_access_token,
-            refresh_token=settings.oura_refresh_token,
-            expires_in=None,
-            token_type="bearer",
-            scope=settings.oura_scopes,
-        )
-        return
+    env_token = settings.oura_access_token
 
     refresh_token = settings.oura_refresh_token or token_store.get_refresh_token()
     can_refresh = bool(refresh_token) and settings.oura_auto_refresh and oauth_context is not None
@@ -213,15 +204,23 @@ def _ensure_oura_access_token(settings, oauth_context: OAuthContext | None, logg
                 )
                 return
         except Exception:
-            logger.warning("oura token refresh failed, falling back to stored token")
+            logger.warning("oura token refresh failed, falling back to existing token")
+
+    if env_token:
+        token_store.set_tokens(
+            access_token=env_token,
+            refresh_token=settings.oura_refresh_token,
+            expires_in=None,
+            token_type="bearer",
+            scope=settings.oura_scopes,
+        )
+        settings.oura_access_token = env_token
+        return
 
     persisted_access = token_store.get_access_token()
     if persisted_access:
         settings.oura_access_token = persisted_access
         return
-
-    if can_refresh:
-        logger.warning("cannot auto refresh oura token", reason="missing oauth client settings")
 
 
 def _run_oura_oauth_status(settings, oauth_context: OAuthContext | None) -> None:
